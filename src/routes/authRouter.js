@@ -58,7 +58,8 @@ authRouter.post('/login', async (req, res) => {
             httpOnly: true,
             secure: isProduction,
             sameSite: isProduction ? 'none' : 'lax',
-            maxAge: 60 * 24 * 60 * 60 * 1000
+            maxAge: 60 * 24 * 60 * 60 * 1000,
+            path: '/'
         };
 
         if (user.isFirstLogin && user.role !== 'admin') {
@@ -197,7 +198,8 @@ authRouter.get('/refresh-token', async (req, res) => {
                     httpOnly: true,
                     secure: isProduction,
                     sameSite: isProduction ? 'none' : 'lax',
-                    maxAge: 60 * 24 * 60 * 60 * 1000 // 60 Days
+                    maxAge: 60 * 24 * 60 * 60 * 1000, // 60 Days
+                    path: '/'
                 };
 
                 // 5. Send it back to the client WITH the new cookie attached
@@ -228,7 +230,8 @@ authRouter.post('/logout', async (req, res) => {
         res.clearCookie("refreshToken", {
             httpOnly: true,
             secure: isProduction,
-            sameSite: isProduction ? 'none' : 'lax'
+            sameSite: isProduction ? 'none' : 'lax',
+            path: '/'
         });
 
         return res.status(200).json({
