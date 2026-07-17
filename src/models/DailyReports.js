@@ -15,7 +15,8 @@ const dailyReportSchema = new mongoose.Schema({
 
     // Optional Event Fields
     eventName: { type: String },
-    eventDate: { type: String }
+    eventDate: { type: String },
+    isReadByAdmin: { type: Boolean, default: false }
 }, { timestamps: true });
 
 // CRITICAL UPDATE: Ensure an employee only has ONE daily report per day, PER SCHOOL.

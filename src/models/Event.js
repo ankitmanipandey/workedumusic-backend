@@ -10,7 +10,8 @@ const eventSchema = new mongoose.Schema({
     endDate: { type: String },
     timeFrom: { type: String, required: true },
     timeTo: { type: String, required: true },
-    description: { type: String, required: true }
+    description: { type: String, required: true },
+    isReadByAdmin: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Event', eventSchema);

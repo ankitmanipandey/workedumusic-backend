@@ -831,7 +831,8 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
                     studentsPresent,
                     summary,
                     eventName,
-                    eventDate
+                    eventDate,
+                    isReadByAdmin: false
                 }
             },
             { returnDocument: 'after', upsert: true }

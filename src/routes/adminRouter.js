@@ -2916,4 +2916,61 @@ adminRouter.delete('/school-holidays/:id', userAuth, adminAuth, async (req, res)
     }
 });
 
+adminRouter.get('/reports/unread-summary', userAuth, adminAuth, async (req, res) => {
+    try {
+        // Group unread Daily Reports by Teacher
+        const unreadReports = await DailyReports.aggregate([
+            { $match: { isReadByAdmin: { $ne: true } } },
+            { $group: { _id: "$teacher", count: { $sum: 1 } } }
+        ]);
+
+        const dailyUnreadMap = {};
+        unreadReports.forEach(r => dailyUnreadMap[r._id] = r.count);
+
+        // Group unread Events by School Name
+        const unreadEvents = await Event.aggregate([
+            { $match: { isReadByAdmin: { $ne: true } } },
+            { $group: { _id: "$schoolName", count: { $sum: 1 } } }
+        ]);
+
+        const eventsUnreadMap = {};
+        unreadEvents.forEach(e => eventsUnreadMap[e._id] = e.count);
+
+        res.status(200).json({
+            success: true,
+            data: {
+                dailyUnread: dailyUnreadMap,
+                eventsUnread: eventsUnreadMap
+            }
+        });
+    } catch (error) {
+        console.error("Unread Summary Error:", error);
+        res.status(500).json({ success: false, message: "Error fetching unread summary" });
+    }
+});
+
+adminRouter.put('/daily-reports/:teacherId/mark-read', userAuth, adminAuth, async (req, res) => {
+    try {
+        await DailyReports.updateMany(
+            { teacher: req.params.teacherId, isReadByAdmin: { $ne: true } },
+            { $set: { isReadByAdmin: true } }
+        );
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
+adminRouter.put('/events/:schoolName/mark-read', userAuth, adminAuth, async (req, res) => {
+    try {
+        await Event.updateMany(
+            { schoolName: req.params.schoolName, isReadByAdmin: { $ne: true } },
+            { $set: { isReadByAdmin: true } }
+        );
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
 module.exports = adminRouter;
