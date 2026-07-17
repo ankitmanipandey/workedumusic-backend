@@ -31,6 +31,7 @@ const chatS3Client = require('../config/chatS3Client');
 const Group = require('../models/Group');
 const Message = require('../models/Message');
 const SchoolHoliday = require('../models/SchoolHoliday');
+const exceljs = require('exceljs')
 
 const sortDaysChronologically = (daysArray) => {
     if (!daysArray || !Array.isArray(daysArray)) return [];
@@ -2672,6 +2673,40 @@ adminRouter.post('/generate-download-url', userAuth, adminAuth, async (req, res)
 });
 
 // ============================================================================
+// 39b. GENERATE SECURE DOWNLOAD URL FOR MEDIA VAULT (GALLERY)
+// ============================================================================
+adminRouter.post('/media-vault/generate-download-url', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { fileUrl } = req.body;
+
+        if (!fileUrl) {
+            return res.status(400).json({ success: false, message: "File URL is required" });
+        }
+
+        // Clean the URL to get the exact key
+        let fileKey = fileUrl.replace(process.env.R2_PUBLIC_URL, '');
+        if (fileKey.startsWith('/')) fileKey = fileKey.substring(1);
+
+        const fileName = fileKey.split('/').pop() || "media_vault_file.mp4";
+
+        // This ResponseContentDisposition header is what forces the browser to download instead of play
+        const command = new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: decodeURIComponent(fileKey),
+            ResponseContentDisposition: `attachment; filename="${fileName}"`
+        });
+
+        const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+
+        res.status(200).json({ success: true, downloadUrl: signedUrl });
+
+    } catch (error) {
+        console.error("Generate Media Vault Download URL Error:", error);
+        res.status(500).json({ success: false, message: "Failed to generate download link" });
+    }
+});
+
+// ============================================================================
 // 40. AUDIT: HARD CLEAR ENTIRE CHAT (DB & CLOUDFLARE)
 // ============================================================================
 adminRouter.delete('/audit/chat', userAuth, adminAuth, async (req, res) => {
@@ -3034,6 +3069,137 @@ adminRouter.put('/daily-reports/report/:reportId/mark-read', userAuth, adminAuth
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ success: false });
+    }
+});
+
+// ==========================================
+// NEW: 30-DAY MEDIA REPORT (JSON FOR PREVIEW)
+// ==========================================
+adminRouter.get('/employees/:id/media-report-30-days', userAuth, adminAuth, async (req, res) => {
+    try {
+        const employeeId = req.params.id;
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const logs = await MediaLog.find({
+            teacher: employeeId,
+            eventDate: { $gte: thirtyDaysAgo }
+        })
+        .populate('school', 'schoolName')
+        .populate('files.gradedBy', 'name')
+        .sort({ eventDate: -1 });
+
+        // Group by school name
+        const grouped = {};
+        logs.forEach(log => {
+            const schoolName = log.school ? log.school.schoolName : 'Unknown School';
+            if (!grouped[schoolName]) {
+                grouped[schoolName] = [];
+            }
+
+            log.files.forEach(file => {
+                grouped[schoolName].push({
+                    date: new Date(log.eventDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                    marks: file.marks !== null ? `${file.marks}/10` : 'Marking Pending',
+                    gradedBy: file.gradedBy ? file.gradedBy.name : (file.marks !== null ? 'Admin' : '-'),
+                    eventName: log.eventContext || log.mediaType || 'Regular Class'
+                });
+            });
+        });
+
+        res.status(200).json({ success: true, data: grouped });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server error fetching report." });
+    }
+});
+
+// ==========================================
+// UPDATED: 30-DAY MEDIA REPORT (EXCEL EXPORT - DIRECT LINKS)
+// ==========================================
+adminRouter.get('/employees/:id/media-report-30-days/download', userAuth, adminAuth, async (req, res) => {
+    try {
+        const employeeId = req.params.id;
+        const employee = await User.findById(employeeId).select('name');
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const logs = await MediaLog.find({
+            teacher: employeeId,
+            eventDate: { $gte: thirtyDaysAgo }
+        })
+            .populate('school', 'schoolName')
+            .populate('files.gradedBy', 'name')
+            .sort({ 'school.schoolName': 1, eventDate: -1 });
+
+        const workbook = new exceljs.Workbook();
+        const worksheet = workbook.addWorksheet('30-Day Media Report');
+
+        worksheet.columns = [
+            { header: 'School Name', key: 'school', width: 35 },
+            { header: 'Submission Date', key: 'date', width: 18 },
+            { header: 'Event/Context', key: 'event', width: 25 },
+            { header: 'Marks', key: 'marks', width: 18 },
+            { header: 'Graded By', key: 'gradedBy', width: 25 },
+            { header: 'Video Link', key: 'link', width: 60 }
+        ];
+
+        worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3B82F6' } };
+
+        let lastSchool = null;
+        let startRow = 2;
+
+        logs.forEach((log) => {
+            const schoolName = log.school ? log.school.schoolName : 'Unknown School';
+            const dateStr = new Date(log.eventDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+            log.files.forEach(file => {
+                const row = worksheet.addRow({
+                    school: schoolName,
+                    date: dateStr,
+                    event: log.eventContext || log.mediaType || 'Regular Class',
+                    marks: file.marks !== null ? `${file.marks}/10` : 'Marking Pending',
+                    gradedBy: file.gradedBy ? file.gradedBy.name : (file.marks !== null ? 'Admin' : 'Pending'),
+                    link: file.url || ''
+                });
+
+                // Apply link styling: Display the full URL as the text AND the hyperlink
+                const linkCell = row.getCell('link');
+                if (file.url) {
+                    linkCell.value = {
+                        text: file.url,      // Shows the full URL text
+                        hyperlink: file.url  // Makes it clickable
+                    };
+                    linkCell.font = { color: { argb: 'FF0563C1' }, underline: true };
+                }
+            });
+
+            // Merge logic for school names
+            if (lastSchool !== null && lastSchool !== schoolName) {
+                if (worksheet.lastRow.number - 1 > startRow) {
+                    worksheet.mergeCells(startRow, 1, worksheet.lastRow.number - 1, 1);
+                }
+                startRow = worksheet.lastRow.number;
+            }
+            lastSchool = schoolName;
+        });
+
+        // Final merge
+        if (worksheet.lastRow.number >= startRow) {
+            worksheet.mergeCells(startRow, 1, worksheet.lastRow.number, 1);
+        }
+
+        worksheet.getColumn(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=Media_Report_${employee?.name.replace(/\s+/g, '_')}_Last_30_Days.xlsx`);
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server error generating Excel." });
     }
 });
 
