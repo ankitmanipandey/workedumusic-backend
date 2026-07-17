@@ -58,7 +58,7 @@ authRouter.post('/login', async (req, res) => {
             httpOnly: true,
             secure: isProduction,
             sameSite: isProduction ? 'none' : 'lax',
-            maxAge: 7 * 24 * 60 * 60 * 1000
+            maxAge: 60 * 24 * 60 * 60 * 1000
         };
 
         if (user.isFirstLogin && user.role !== 'admin') {
@@ -188,15 +188,26 @@ authRouter.get('/refresh-token', async (req, res) => {
                     });
                 }
 
-                // 4. Generate a fresh Access Token
+                // 4. Generate BOTH a fresh Access Token AND a new Refresh Token
                 const newAccessToken = generateAccessToken(user._id, user.role);
+                const newRefreshToken = generateRefreshToken(user._id, user.role);
 
-                // 5. Send it back to the client
-                return res.status(200).json({
-                    success: true,
-                    message: "Access token refreshed successfully",
-                    access_token: newAccessToken
-                });
+                const isProduction = process.env.NODE_ENV === 'production';
+                const cookieOptions = {
+                    httpOnly: true,
+                    secure: isProduction,
+                    sameSite: isProduction ? 'none' : 'lax',
+                    maxAge: 60 * 24 * 60 * 60 * 1000 // 60 Days
+                };
+
+                // 5. Send it back to the client WITH the new cookie attached
+                return res.status(200)
+                    .cookie("refreshToken", newRefreshToken, cookieOptions)
+                    .json({
+                        success: true,
+                        message: "Access token refreshed successfully",
+                        access_token: newAccessToken
+                    });
             }
         );
 
