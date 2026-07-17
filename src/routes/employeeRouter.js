@@ -36,6 +36,7 @@ const path = require('path');
 const assetsS3Client = require('../config/assetsS3Client');
 const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper');
 const Conversation = require('../models/Conversation');
+const SchoolHoliday = require('../models/SchoolHoliday');
 
 const employeeRouter = express.Router();
 
@@ -132,9 +133,9 @@ employeeRouter.get('/get-city', userAuth, async (req, res) => {
 employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
     try {
         const employeeId = req.user._id;
-        const now = new Date();
-        const todayString = getISTDateString();
-        const todayDayOfWeek = getISTDayOfWeek();
+        const now = new Date(); // Exact UTC moment, perfect for MongoDB ISODate comparison
+        const todayString = getISTDateString(now);
+        const todayDayOfWeek = getISTDayOfWeek(now);
 
         const user = await User.findById(employeeId).populate({
             path: 'assignments.school',
@@ -143,18 +144,52 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
 
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
+        // 1. Fetch normal attendance logs for today
         const todaysLogs = await Attendance.find({ teacher: employeeId, date: todayString });
+
+        // 2. Fetch active Admin School Holidays for the exact current moment
+        // MongoDB stores ISODates in UTC. Comparing 'now' guarantees 100% timezone sync
+        const activeHolidays = await SchoolHoliday.find({
+            startDate: { $lte: now },
+            endDate: { $gte: now }
+        });
 
         let activeAssignments = [];
 
         user.assignments.forEach(assignment => {
             if (!assignment?.allowedDays?.includes(todayDayOfWeek)) return;
 
+            // -- NEW: Check if Admin assigned a holiday for this school & category --
+            const adminHoliday = activeHolidays.find(h =>
+                h.affectedSchools.some(id => id.toString() === assignment.school._id.toString()) &&
+                (h.category === assignment.category || h.category === "All" || !h.category)
+            );
+
+            // Scenario 1 & 2 Logic: If it's a holiday, add it to the array with a special status
+            if (adminHoliday) {
+                activeAssignments.push({
+                    id: `${assignment.school._id}-${assignment.category}`,
+                    schoolId: assignment.school._id,
+                    schoolName: assignment.school.schoolName,
+                    address: assignment.school.address,
+                    category: assignment.category,
+                    startTime: assignment.startTime,
+                    endTime: assignment.endTime,
+                    coordinates: assignment.school.location?.coordinates || [],
+                    status: "school_holiday", // Triggers the frontend UI changes
+                    holidayTitle: adminHoliday.title,
+                    minutesLate: 0,
+                    overtimeMinutes: 0
+                });
+                return; // Skip the rest of the attendance checks for this assignment
+            }
+
+            // -- NORMAL ATTENDANCE LOGIC --
             const log = todaysLogs.find(l =>
                 l.school?.toString() === assignment?.school?._id.toString() && l?.band === assignment.category
             );
 
-            // Hide completed shifts or marked absences/holidays
+            // Hide manually completed shifts or manually marked absences/holidays by the employee
             if (log && (log.checkOutTime || ['Absent', 'Holiday'].includes(log.status))) return;
 
             let uiStatus = log ? "checked_in" : "pending";
@@ -178,7 +213,7 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
                 category: assignment.category,
                 startTime: assignment.startTime,
                 endTime: assignment.endTime,
-                coordinates: assignment.school.location.coordinates, // [lng, lat] for maps
+                coordinates: assignment.school.location?.coordinates || [],
                 status: uiStatus,
                 minutesLate,
                 overtimeMinutes
@@ -1664,7 +1699,7 @@ employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.user._id,
             { profilePicture: publicUrl },
-            { new: true }
+            { returnDocument: 'after' }
         ).select('-password');
 
         if (!updatedUser) {
@@ -1717,7 +1752,7 @@ employeeRouter.delete("/profile-picture", userAuth, async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.user._id,
             { profilePicture: null },
-            { new: true }
+            { returnDocument: 'after' }
         ).select('-password');
 
         return res.status(200).json({

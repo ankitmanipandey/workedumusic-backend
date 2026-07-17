@@ -9,6 +9,7 @@ const Notification = require('../models/Notification');
 const { sendWeeklyScoreToEmployee, sendTopPerformersToAdmin } = require('../utils/emailService');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper');
+const SchoolHoliday = require('../models/SchoolHoliday');
 
 const calculateScoreAndZone = (earnedAttendancePoints, expectedDays, stats, mediaLogs, warnings, previousScore) => {
     let attendanceScore = 0;
@@ -58,35 +59,35 @@ const startWeeklyScoreCron = (io) => {
         console.log("🏆 Running Weekly Leaderboard Calculation...");
 
         try {
-            // --- 🚨 FIXED: ESTABLISH EXACT IST BOUNDARIES ---
             const todayDate = new Date();
             const endDateStr = getISTDateString(todayDate);
 
-            // Go back 6 days to create an exact 7-day inclusive window (e.g. Sunday to Saturday)
             const startDateObj = new Date(todayDate);
             startDateObj.setDate(startDateObj.getDate() - 6);
             const startDateStr = getISTDateString(startDateObj);
 
-            // Create strict DB timestamp bounds for queries & saving
             const weekStartIST = new Date(`${startDateStr}T00:00:00.000+05:30`);
             const weekEndIST = new Date(`${endDateStr}T23:59:59.999+05:30`);
+
+            // 2. Fetch all holidays active during this week once to save performance
+            const activeHolidays = await SchoolHoliday.find({
+                startDate: { $lte: weekEndIST },
+                endDate: { $gte: weekStartIST }
+            });
 
             const employees = await User.find({ role: 'Employee', isActive: true });
             let leaderboardData = [];
 
             for (const emp of employees) {
-                // String DB matching for Attendance
                 const attendance = await Attendance.find({ teacher: emp._id, date: { $gte: startDateStr, $lte: endDateStr } });
-
-                // Strict Timestamp matching for Logs/Warnings
                 const mediaLogs = await MediaLog.find({ teacher: emp._id, createdAt: { $gte: weekStartIST, $lte: weekEndIST } });
                 const warnings = await Warning.find({ teacher: emp._id, dateIssued: { $gte: weekStartIST, $lte: weekEndIST } });
 
                 let expectedDays = 0;
                 let earnedAttendancePoints = 0;
-                let stats = { present: 0, late: 0, absent: 0, leaves: 0, warningsCount: 0, averageMediaScore: 0 };
+                // 3. Added 'holidays' to stats for transparency
+                let stats = { present: 0, late: 0, absent: 0, leaves: 0, holidays: 0, warningsCount: 0, averageMediaScore: 0 };
 
-                // Loop through the exactly 7 days
                 for (let i = 0; i <= 6; i++) {
                     const checkDate = new Date(startDateObj);
                     checkDate.setDate(startDateObj.getDate() + i);
@@ -109,13 +110,18 @@ const startWeeklyScoreCron = (io) => {
                         continue;
                     }
 
+                    // 4. HOLIDAY FILTERING LOGIC
+                    // Filter holidays that are active on this specific day
+                    const holidaysToday = activeHolidays.filter(h =>
+                        h.startDate <= checkEnd && h.endDate >= checkStart
+                    );
+
                     let expectedToWork = false;
                     if (emp.assignments && emp.assignments.length > 0) {
                         for (const assign of emp.assignments) {
                             if (assign.allowedDays.includes(dayName)) {
                                 const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
                                 const assignStartStr = getISTDateString(assignmentStartDate);
-
                                 const isAfterStartDate = checkDateStr >= assignStartStr;
 
                                 let isBeforeEndDate = true;
@@ -125,8 +131,17 @@ const startWeeklyScoreCron = (io) => {
                                 }
 
                                 if (isAfterStartDate && isBeforeEndDate) {
-                                    expectedToWork = true;
-                                    break;
+                                    // 5. CHECK: Is this specific assignment on holiday today?
+                                    const isAssignmentOnHoliday = holidaysToday.some(h =>
+                                        h.affectedSchools.some(schoolId => schoolId.toString() === assign.school.toString()) &&
+                                        (h.category === assign.category || h.category === 'All')
+                                    );
+
+                                    // If even ONE assignment is NOT a holiday, they are expected to work
+                                    if (!isAssignmentOnHoliday) {
+                                        expectedToWork = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -149,11 +164,16 @@ const startWeeklyScoreCron = (io) => {
                         } else {
                             stats.absent += 1;
                         }
+                    } else {
+                        // 6. If they weren't expected to work because of a holiday, increment holiday stat
+                        // This helps admins see why expectedDays is lower than 7
+                        const isDayCoveredByHoliday = holidaysToday.length > 0;
+                        if (isDayCoveredByHoliday) stats.holidays += 1;
                     }
                 }
 
                 const { finalScore, colorZone, scoreTrend } = calculateScoreAndZone(
-                    earnedAttendancePoints, expectedDays, stats, mediaLogs, warnings, emp.currentWeeklyScore
+                    earnedAttendancePoints, expectedDays, stats, mediaLogs, warnings, emp.currentWeeklyScore || 0
                 );
 
                 leaderboardData.push({

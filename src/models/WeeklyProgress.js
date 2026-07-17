@@ -21,7 +21,8 @@ const weeklyProgressSchema = new mongoose.Schema({
         absent: { type: Number, default: 0 },
         approvedLeaves: { type: Number, default: 0 },
         averageMediaScore: { type: Number, default: 0 }, // e.g., 8.5 out of 10
-        warningsCount: { type: Number, default: 0 }
+        warningsCount: { type: Number, default: 0 },
+        holidays: { type: Number, default: 0 }
     }
 }, { timestamps: true });
 

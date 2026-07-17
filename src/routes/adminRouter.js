@@ -2669,14 +2669,23 @@ adminRouter.get('/school-holidays', userAuth, adminAuth, async (req, res) => {
 adminRouter.put('/school-holidays/:id', userAuth, adminAuth, async (req, res) => {
     try {
         const { title, startDate, endDate, category } = req.body;
+
+        // Note: Updated { new: true } to { returnDocument: 'after' } to clear the Mongoose warning
         const updated = await SchoolHoliday.findByIdAndUpdate(req.params.id, {
             title,
             startDate: new Date(`${startDate}T00:00:00.000+05:30`),
             endDate: new Date(`${endDate}T23:59:59.999+05:30`),
             category
-        }, { new: true });
+        }, { returnDocument: 'after' });
+
+        // --- THE FIX: Null Check ---
+        // If no holiday was found with that ID, 'updated' is null. Stop execution and tell the frontend.
+        if (!updated) {
+            return res.status(404).json({ success: false, message: "Holiday record not found or already deleted." });
+        }
 
         // --- NOTIFICATIONS & EMAILS LOGIC ---
+        // It is now 100% safe to read updated.startDate
         const fromStr = new Date(updated.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
         const toStr = new Date(updated.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
