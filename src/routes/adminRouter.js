@@ -361,7 +361,7 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
 adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAuth, async (req, res) => {
     try {
         const { empId, assignmentId } = req.params;
-        const {
+        let {
             schoolName, schoolAddress, category, startDate, endDate,
             startTime, endTime, allowedDays, latitude, longitude
         } = req.body;
@@ -845,7 +845,7 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
     try {
         const { taskId } = req.params;
-        const {
+        let {
             schoolName, schoolAddress, latitude, longitude,
             taskDescription, category, startDate, endDate, startTime, endTime, daysAllotted, status
         } = req.body;
