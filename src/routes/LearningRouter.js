@@ -13,7 +13,7 @@ const Notification = require('../models/Notification');
 // Middleware & Config
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
-const s3Client = require('../config/s3');
+const s3Client = require('../config/s3'); 
 
 // Email Services
 const {
