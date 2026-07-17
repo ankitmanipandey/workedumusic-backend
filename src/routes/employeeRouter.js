@@ -28,7 +28,9 @@ const {
     sendLeaveRequestEmailToAdmin,
     sendLeaveRevokedEmailToAdmin,
     sendMediaUploadFailureEmailToEmployee,
-    sendNewMediaEmailToAdmin
+    sendNewMediaEmailToAdmin,
+    sendHolidayAlertToAdmin,
+    sendHolidayAlertToEmployee
 } = require('../utils/emailService');
 const DailyReports = require('../models/DailyReports');
 const LeaveRequest = require('../models/LeaveRequest');
@@ -2000,6 +2002,186 @@ employeeRouter.post('/save-fcm-token', userAuth, async (req, res) => {
     } catch (error) {
         console.error("Error saving FCM token:", error);
         res.status(500).json({ success: false, message: "Server error while saving token" });
+    }
+});
+
+// ============================================================================
+// 37. GET SCHOOL HOLIDAYS (EMPLOYEE SIDE)
+// ============================================================================
+employeeRouter.get('/school-holidays', userAuth, async (req, res) => {
+    try {
+        const { schoolId, category } = req.query;
+        let query = {};
+
+        if (schoolId) query.affectedSchools = schoolId;
+        if (category && category !== 'All') {
+            query.category = { $in: [category, 'All'] };
+        }
+
+        const holidays = await SchoolHoliday.find(query).sort({ startDate: -1 });
+        res.json({ success: true, data: holidays });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// ============================================================================
+// 38. CREATE SCHOOL HOLIDAY (EMPLOYEE SIDE)
+// ============================================================================
+employeeRouter.post('/school-holidays', userAuth, async (req, res) => {
+    try {
+        const { title, startDate, endDate, affectedSchools, category } = req.body;
+
+        // 1. SECURITY: Ensure the employee is actually assigned to this school
+        const employee = await User.findById(req.user._id);
+        const hasAccess = employee.assignments.some(a =>
+            affectedSchools.includes(a.school.toString()) &&
+            (category === 'All' || a.category === category)
+        );
+
+        if (!hasAccess) {
+            return res.status(403).json({ success: false, message: "You are not authorized to assign holidays for this school/category." });
+        }
+
+        const holiday = await SchoolHoliday.create({
+            title,
+            startDate: new Date(`${startDate}T00:00:00.000+05:30`),
+            endDate: new Date(`${endDate}T23:59:59.999+05:30`),
+            affectedSchools,
+            category: category || 'All',
+            createdBy: req.user._id
+        });
+
+        // --- NOTIFICATIONS & EMAILS LOGIC ---
+        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+
+        let schoolNamesStr = "Assigned School";
+        if (affectedSchools && affectedSchools.length > 0) {
+            const schools = await School.find({ _id: { $in: affectedSchools } });
+            schoolNamesStr = schools.map(s => s.schoolName).join(', ');
+        }
+
+        // Notify Admins
+        const adminMsg = `${employee.name} scheduled a holiday (${title}) for ${schoolNamesStr} (${fromStr} to ${toStr}).`;
+        const admins = await notifyAdminsInApp(req, "System Alert: Holiday Scheduled", adminMsg, "System");
+
+        for (const admin of admins) {
+            if (await canSendEmailToUser(admin)) {
+                sendHolidayAlertToAdmin(admin.email, admin.name, "Scheduled", title, schoolNamesStr, holiday.category, fromStr, toStr, employee.name).catch(console.error);
+            }
+        }
+
+        // Notify Peer Employees (excluding the creator)
+        const peerEmployees = await User.find({ role: 'Employee', isActive: true, _id: { $ne: employee._id } });
+        const affectedPeers = peerEmployees.filter(emp => emp.assignments.some(a =>
+            holiday.affectedSchools.map(id => id.toString()).includes(a.school.toString()) &&
+            (holiday.category === 'All' || a.category === holiday.category)
+        ));
+
+        for (const peer of affectedPeers) {
+            const peerMsg = `A new holiday (${title}) has been scheduled for ${schoolNamesStr} from ${fromStr} to ${toStr}.`;
+            const peerNotif = await Notification.create({ recipient: peer._id, title: "Holiday Scheduled", message: peerMsg, type: "System" });
+            if (req.io) req.io.to(peer._id.toString()).emit('new_notification', peerNotif);
+
+            if (await canSendEmailToUser(peer)) {
+                sendHolidayAlertToEmployee(peer.email, peer.name, "Scheduled", title, schoolNamesStr, holiday.category, fromStr, toStr).catch(console.error);
+            }
+        }
+
+        res.status(201).json({ success: true, data: holiday });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// ============================================================================
+// 39. UPDATE SCHOOL HOLIDAY (EMPLOYEE SIDE)
+// ============================================================================
+employeeRouter.put('/school-holidays/:id', userAuth, async (req, res) => {
+    try {
+        const { title, startDate, endDate, category } = req.body;
+
+        const holidayToUpdate = await SchoolHoliday.findById(req.params.id);
+        if (!holidayToUpdate) return res.status(404).json({ success: false, message: "Holiday not found." });
+
+        // SECURITY: Verify access
+        const employee = await User.findById(req.user._id);
+        const hasAccess = employee.assignments.some(a =>
+            holidayToUpdate.affectedSchools.map(id => id.toString()).includes(a.school.toString())
+        );
+
+        if (!hasAccess) return res.status(403).json({ success: false, message: "Unauthorized." });
+
+        const updated = await SchoolHoliday.findByIdAndUpdate(req.params.id, {
+            title,
+            startDate: new Date(`${startDate}T00:00:00.000+05:30`),
+            endDate: new Date(`${endDate}T23:59:59.999+05:30`),
+            category
+        }, { returnDocument: 'after' });
+
+        const fromStr = new Date(updated.startDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+        const toStr = new Date(updated.endDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+
+        let schoolNamesStr = "Assigned School";
+        if (updated.affectedSchools && updated.affectedSchools.length > 0) {
+            const schools = await School.find({ _id: { $in: updated.affectedSchools } });
+            schoolNamesStr = schools.map(s => s.schoolName).join(', ');
+        }
+
+        const adminMsg = `${employee.name} updated the holiday (${title}) for ${schoolNamesStr}.`;
+        const admins = await notifyAdminsInApp(req, "System Alert: Holiday Updated", adminMsg, "System");
+
+        for (const admin of admins) {
+            if (await canSendEmailToUser(admin)) {
+                sendHolidayAlertToAdmin(admin.email, admin.name, "Updated", title, schoolNamesStr, updated.category, fromStr, toStr, employee.name).catch(console.error);
+            }
+        }
+
+        res.json({ success: true, data: updated });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// ============================================================================
+// 40. DELETE SCHOOL HOLIDAY (EMPLOYEE SIDE)
+// ============================================================================
+employeeRouter.delete('/school-holidays/:id', userAuth, async (req, res) => {
+    try {
+        const holiday = await SchoolHoliday.findById(req.params.id);
+        if (!holiday) return res.status(404).json({ success: false, message: "Holiday not found" });
+
+        const employee = await User.findById(req.user._id);
+        const hasAccess = employee.assignments.some(a =>
+            holiday.affectedSchools.map(id => id.toString()).includes(a.school.toString())
+        );
+
+        if (!hasAccess) return res.status(403).json({ success: false, message: "Unauthorized." });
+
+        await SchoolHoliday.findByIdAndDelete(req.params.id);
+
+        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
+
+        let schoolNamesStr = "Assigned School";
+        if (holiday.affectedSchools && holiday.affectedSchools.length > 0) {
+            const schools = await School.find({ _id: { $in: holiday.affectedSchools } });
+            schoolNamesStr = schools.map(s => s.schoolName).join(', ');
+        }
+
+        const adminMsg = `${employee.name} cancelled the holiday (${holiday.title}) for ${schoolNamesStr}.`;
+        const admins = await notifyAdminsInApp(req, "System Alert: Holiday Cancelled", adminMsg, "System");
+
+        for (const admin of admins) {
+            if (await canSendEmailToUser(admin)) {
+                sendHolidayAlertToAdmin(admin.email, admin.name, "Cancelled", holiday.title, schoolNamesStr, holiday.category, fromStr, toStr, employee.name).catch(console.error);
+            }
+        }
+
+        res.json({ success: true, message: "Holiday deleted" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
