@@ -1330,55 +1330,34 @@ adminRouter.get('/daily-feed', async (req, res) => {
 });
 
 // ==========================================
-// 17. GET Admin Dashboard (ULTIMATE REAL-TIME LOG)
+// 17. GET Admin Dashboard (SHIFT-BASED LOGIC FIXED)
 // ==========================================
 adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     try {
-        // --- STRICT IST BOUNDARIES ---
         const dateString = getISTDateString();
         const currentDayName = getISTDayOfWeek();
 
         const todayStart = new Date(`${dateString}T00:00:00.000+05:30`);
         const todayEnd = new Date(`${dateString}T23:59:59.999+05:30`);
 
+        // 1. Total Staff (Unique Employees)
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
+        // 2. Fetch Active Leaves & Holidays
         const activeLeaves = await LeaveRequest.find({
             status: 'approved',
             fromDate: { $lte: todayEnd },
             toDate: { $gte: todayStart }
         });
+        const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
 
-        const uniqueEmployeesOnLeave = [...new Set(activeLeaves.map(leave => leave.employee.toString()))];
-        const onLeaveToday = uniqueEmployeesOnLeave.length;
-        const usersOnLeaveSet = new Set(uniqueEmployeesOnLeave);
-
-        let expectedShifts = 0;
-        employees.forEach(emp => {
-            if (!emp.assignments || emp.assignments.length === 0) return;
-            if (usersOnLeaveSet.has(emp._id.toString())) return;
-
-            emp.assignments.forEach(assign => {
-                if (!assign.school) return;
-                const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
-
-                // --- TIMEZONE SAFE STRING MATH ---
-                const assignStartStr = getISTDateString(assignmentStartDate);
-                const isAfterStartDate = dateString >= assignStartStr;
-
-                let isBeforeEndDate = true;
-                if (assign.endDate) {
-                    const assignEndStr = getISTDateString(new Date(assign.endDate));
-                    isBeforeEndDate = dateString <= assignEndStr;
-                }
-
-                if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
-                    expectedShifts++;
-                }
-            });
+        const activeSchoolHolidays = await SchoolHoliday.find({
+            startDate: { $lte: todayEnd },
+            endDate: { $gte: todayStart }
         });
 
+        // 3. Fetch Today's Attendance Records
         const todaysAttendance = await Attendance.find({ date: dateString })
             .populate('teacher', 'name zone profilePicture')
             .populate('school', 'schoolName address')
@@ -1390,41 +1369,114 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             .populate('employee', 'name zone profilePicture')
             .sort({ updatedAt: -1 });
 
-        // UPDATED OVERVIEW STATS: presentCount now represents "On-Site" (Present but not Checked Out)
-        let presentCount = 0;
+        // --- NEW SHIFT-BASED LOGIC ---
+        let completedCount = 0;
+        let onSiteCount = 0;
         let noShowCount = 0;
+        let holidayCount = 0;
+        let leaveCount = 0;
+        let pendingCount = 0;
 
+        // Keep track of shifts that already have an explicit attendance record
+        const processedShifts = new Set();
+
+        // STEP A: Tally actual attendance records first
         todaysAttendance.forEach(record => {
-            if (['Present', 'Late', 'Event'].includes(record.status) && !record.checkOutTime) {
-                presentCount++;
+            const empIdStr = record.teacher ? record.teacher._id.toString() : 'unknown';
+            const schoolIdStr = record.school ? record.school._id.toString() : 'unknown';
+
+            // THE FIX: Include the band/category to prevent double-shift collisions
+            const band = (record.band || 'General').toLowerCase().trim();
+            const shiftKey = `${empIdStr}_${schoolIdStr}_${band}`;
+            processedShifts.add(shiftKey);
+
+            // THE FIX: Safe Uppercase matching to prevent 'holiday' vs 'Holiday' bugs
+            const status = (record.status || '').toUpperCase();
+
+            if (['PRESENT', 'LATE', 'EVENT'].includes(status)) {
+                if (record.checkOutTime) {
+                    completedCount++; // Checked in AND out
+                } else {
+                    onSiteCount++;    // Checked in, not out
+                }
+            } else if (status === 'ABSENT') {
+                noShowCount++;        // Marked absent explicitly
+            } else if (status === 'HOLIDAY') {
+                holidayCount++;       // Marked holiday explicitly
+            } else if (status === 'LEAVE') {
+                leaveCount++;         // Marked leave explicitly
             }
-            if (record.status === 'Absent') noShowCount++;
         });
 
-        const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
+        // STEP B: Evaluate all remaining expected assignments
+        employees.forEach(emp => {
+            if (!emp.assignments || emp.assignments.length === 0) return;
+            const empIdStr = emp._id.toString();
 
-        // UPDATED ACTIVITY FEED: Map action based on checkOutTime field
+            emp.assignments.forEach(assign => {
+                if (!assign.school) return;
+
+                const schoolIdStr = assign.school.toString();
+                const band = (assign.category || 'General').toLowerCase().trim();
+                const shiftKey = `${empIdStr}_${schoolIdStr}_${band}`;
+
+                // If this specific shift already has an attendance record today, skip it (already tallied in Step A)
+                if (processedShifts.has(shiftKey)) return;
+
+                // Check if this assignment is actually scheduled for today
+                const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
+                const assignStartStr = getISTDateString(assignmentStartDate);
+                const isAfterStartDate = dateString >= assignStartStr;
+
+                let isBeforeEndDate = true;
+                if (assign.endDate) {
+                    const assignEndStr = getISTDateString(new Date(assign.endDate));
+                    isBeforeEndDate = dateString <= assignEndStr;
+                }
+
+                if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
+                    // This is a valid shift for today with NO attendance record yet. Let's categorize it.
+
+                    // Priority 1: Is the employee on an Approved Leave?
+                    if (usersOnLeaveSet.has(empIdStr)) {
+                        leaveCount++;
+                    }
+                    // Priority 2: Is the assigned school on a Vacation/Holiday?
+                    else {
+                        const isSchoolHoliday = activeSchoolHolidays.some(holiday => {
+                            const isSchoolMatch = holiday.affectedSchools.length === 0 || holiday.affectedSchools.map(id => id.toString()).includes(schoolIdStr);
+                            const isCategoryMatch = holiday.category === 'All' || assign.category === holiday.category;
+                            return isSchoolMatch && isCategoryMatch;
+                        });
+
+                        if (isSchoolHoliday) {
+                            holidayCount++;
+                        }
+                        // Priority 3: No leave, no holiday, no manual record = Pending
+                        else {
+                            pendingCount++;
+                        }
+                    }
+                }
+            });
+        });
+
+        // 4. Format Activity Feed 
         const attendanceActivity = todaysAttendance.map(att => {
             const diffMins = Math.round((new Date() - new Date(att.updatedAt)) / 60000);
+            const statusUpper = (att.status || '').toUpperCase();
 
             let actionText = "Status Updated";
-            if (att.checkOutTime) {
-                actionText = "Checked Out";
-            } else if (att.status === 'Present') {
-                actionText = "Checked In";
-            } else if (att.status === 'Late') {
-                actionText = "Late Check-in";
-            } else if (att.status === 'Absent') {
-                actionText = "Marked Absent";
-            } else if (att.status === 'Holiday') {
-                actionText = "Marked Holiday";
-            } else if (att.status === 'Event') {
-                actionText = "Added Event Note";
-            }
+            if (att.checkOutTime) actionText = "Checked Out";
+            else if (statusUpper === 'PRESENT') actionText = "Checked In";
+            else if (statusUpper === 'LATE') actionText = "Late Check-in";
+            else if (statusUpper === 'ABSENT') actionText = "Marked Absent";
+            else if (statusUpper === 'HOLIDAY') actionText = "Marked Holiday";
+            else if (statusUpper === 'EVENT') actionText = "Added Event Note";
 
             let displayTime = att.updatedAt;
             if (att.checkOutTime) displayTime = att.checkOutTime;
-            else if (att.status === 'Present' || att.status === 'Late') displayTime = att.checkInTime || att.updatedAt;
+            else if (statusUpper === 'PRESENT' || statusUpper === 'LATE') displayTime = att.checkInTime || att.updatedAt;
 
             return {
                 id: att._id,
@@ -1471,10 +1523,12 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             data: {
                 stats: {
                     totalEmployees,
-                    presentToday: presentCount,
+                    completedToday: completedCount,
+                    presentToday: onSiteCount,
                     noShow: noShowCount,
-                    pending: pendingCount,
-                    onLeaveToday
+                    onLeaveToday: leaveCount,
+                    onHolidayToday: holidayCount,
+                    pending: pendingCount
                 },
                 recentActivity: combinedActivity
             }
