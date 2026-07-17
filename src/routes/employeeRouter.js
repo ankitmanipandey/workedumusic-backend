@@ -1233,20 +1233,71 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
         // Populating references for the response and for the notification
         await newLog.populate([
             { path: 'school', select: 'schoolName' },
-            { path: 'teacher', select: 'name' }
+            { path: 'teacher', select: 'name email' } // Added email for the email service
         ]);
 
         // 2. Send Success Response immediately
         res.status(201).json({ success: true, data: newLog });
 
-        // 3. Background Broadcast to all employees
+        // ==============================================================
+        // 🚀 3. NOTIFY ADMINS AND PEERS IN-APP AND VIA EMAIL
+        // ==============================================================
         (async () => {
             try {
                 const teacherName = newLog.teacher ? newLog.teacher.name : "A colleague";
                 const schoolName = newLog.school ? newLog.school.schoolName : "a school";
 
-                const message = {
-                    topic: 'media_updates', // Ensure all mobile clients subscribe to this topic
+                const title = `New Media Uploaded: ${schoolName}`;
+                const messageText = `${teacherName} has uploaded ${uploadedFiles.length} new video(s) for the ${band}.`;
+
+                // A. Create In-App Notifications for all Admins
+                const admins = await notifyAdminsInApp(req, title, messageText, "Media");
+
+                if (typeof sendNewMediaEmailToAdmin === 'function') {
+                    for (const admin of admins) {
+                        if (await canSendEmailToUser(admin)) {
+                            await sendNewMediaEmailToAdmin(
+                                admin.email, admin.name, teacherName, schoolName, band, uploadedFiles.length
+                            ).catch(console.error);
+                        }
+                    }
+                }
+
+                // ==========================================
+                // 🔥 THE FIX: B. Create In-App Notifications for Peer Employees
+                // ==========================================
+                // Find all active employees EXCEPT the one who just uploaded the media
+                const peerEmployees = await User.find({
+                    role: 'Employee',
+                    isActive: true,
+                    _id: { $ne: req.user._id }
+                }).select('_id');
+
+                if (peerEmployees.length > 0) {
+                    // Prepare the array of notification documents
+                    const peerNotifications = peerEmployees.map(emp => ({
+                        recipient: emp._id,
+                        title: `New Media from ${teacherName}`,
+                        message: `${teacherName} just uploaded new media from ${schoolName}. Check it out!`,
+                        type: "Media",
+                        isRead: false
+                    }));
+
+                    // Bulk insert all notifications at once for high performance
+                    const savedPeerNotifs = await Notification.insertMany(peerNotifications);
+
+                    // Emit live Socket.io pings so their Red Badges update instantly
+                    if (req.io) {
+                        savedPeerNotifs.forEach(notif => {
+                            req.io.to(notif.recipient.toString()).emit('new_notification', notif);
+                        });
+                    }
+                }
+                // ==========================================
+
+                // C. Send Firebase Push Notification to Mobile Devices
+                const fcmMessage = {
+                    topic: 'media_updates',
                     data: {
                         type: 'new_media_upload',
                         title: 'New Media Uploaded! 🚀',
@@ -1255,11 +1306,13 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
                     }
                 };
 
-                // 'admin' here assumes you have initialized firebase-admin SDK
-                await admin.messaging().send(message);
-                console.log("📢 Broadcast sent to media_updates topic");
+                if (typeof admin !== 'undefined' && admin.messaging) {
+                    await admin.messaging().send(fcmMessage);
+                    console.log("📢 Broadcast sent to media_updates topic");
+                }
+
             } catch (err) {
-                console.error("Broadcast failed:", err);
+                console.error("Post-Upload Notification/Broadcast failed:", err);
             }
         })();
 
