@@ -850,6 +850,8 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
                 categoryName: "Event Report",
                 eventName: eventName,
                 description: summary,
+                timeFrom: req.body.timeFrom,
+                timeTo: req.body.timeTo,
                 // Ensure strict IST Date object for sorting in the Events tab
                 startDate: eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date(),
                 isReadByAdmin: false
