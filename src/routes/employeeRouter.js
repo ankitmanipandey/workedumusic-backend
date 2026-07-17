@@ -69,7 +69,7 @@ const getScheduledDate = (timeStr) => {
 // Handles In-App Notifications & Sockets, and returns the list of admins 
 // so we can loop through them to send specific emails.
 const notifyAdminsInApp = async (req, title, message, type = "System") => {
-    const admins = await User.find({ role: { $in: ['Admin'] } });
+    const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
     await Promise.all(admins.map(async (admin) => {
         const notif = await Notification.create({ recipient: admin._id, title, message, type });
