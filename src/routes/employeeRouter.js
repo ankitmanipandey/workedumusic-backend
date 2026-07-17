@@ -696,7 +696,7 @@ employeeRouter.post('/events', userAuth, async (req, res) => {
             endDate: istEndDate || endDate,
             ...restBody
         });
-
+        await event.populate('teacher', 'name');
         const employeeName = req.user.name;
 
         if (req.io) {
@@ -804,30 +804,28 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post('/daily-report', userAuth, async (req, res) => {
     try {
-        // 1. Extract the new fields (schoolId, band) sent from the frontend React app
         const { schoolId, band, bandStage, date, category, summary, eventName, eventDate, studentsPresent } = req.body;
         const teacherId = req.user._id;
-        const teacherName = req.user.name; // Get the employee's name for the alert
+        const teacherName = req.user.name;
 
-        // 2. Fetch the School Name to save it directly on the report 
-        // (This prevents the "General Location" fallback on the Admin UI)
         const school = await School.findById(schoolId);
         const schoolName = school ? school.schoolName : "Unknown School";
+        const schoolAddress = school ? school.address : ""; // Needed for the Events tab
 
-        // 3. Upsert: Update if exists, Create if it doesn't
-        // Note: Added schoolId to the query filter so a teacher can submit different reports for different schools on the same day.
+        // 1. Save to DailyReports (ADDED 'category' to filter so Regular and Event reports don't overwrite)
         const report = await DailyReports.findOneAndUpdate(
             {
                 teacher: teacherId,
                 date: date,
                 schoolId: schoolId,
-                band: band
+                band: band,
+                category: category // <--- FIX: Added category filter
             },
             {
                 $set: {
                     schoolId,
-                    schoolName,  // Added schoolName
-                    band,        // Added band (Junior/Senior)
+                    schoolName,
+                    band,
                     category,
                     studentsPresent,
                     bandStage,
@@ -840,23 +838,49 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
             { returnDocument: 'after', upsert: true }
         );
 
-        // --- REAL-TIME SOCKET & NOTIFICATION EMIT TO ADMINS ---
+        // ==========================================
+        // 2. NEW LOGIC: Mirror to the Events Collection
+        // ==========================================
+        if (category === "Event Report") {
+            const newEvent = await Event.create({
+                teacher: teacherId,
+                schoolName: schoolName,
+                location: schoolAddress,
+                band: band,
+                categoryName: "Event Report",
+                eventName: eventName,
+                description: summary,
+                // Ensure strict IST Date object for sorting in the Events tab
+                startDate: eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date(),
+                isReadByAdmin: false
+            });
+
+            // Populate teacher name before sending via socket
+            await newEvent.populate('teacher', 'name');
+
+            if (req.io) {
+                const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
+                admins.forEach(admin => {
+                    // Triggers the handleNewEvent socket to instantly show it in Upcoming Events
+                    req.io.to(admin._id.toString()).emit('new_event', newEvent);
+                });
+            }
+        }
+        // ==========================================
+
+        // 3. Existing Socket Logic for Daily Reports
         if (req.io) {
             const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
             await Promise.all(admins.map(async (admin) => {
-                // 1. Create the actual Notification in the database for the Alerts tab
                 const adminNotif = await Notification.create({
                     recipient: admin._id,
                     title: "Daily Report Submitted",
-                    message: `${teacherName} has submitted their End of Day report for ${schoolName}.`, // Added schoolName to notification
+                    message: `${teacherName} has submitted their End of Day report for ${schoolName}.`,
                     type: "System"
                 });
 
-                // 2. Emit the standard notification (This triggers the Sound & Red Badge!)
                 req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
-
-                // 3. Emit the custom event to update the Daily Reports UI live
                 req.io.to(admin._id.toString()).emit('new_daily_report', report);
             }));
         }
