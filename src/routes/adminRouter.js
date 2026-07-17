@@ -839,6 +839,13 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         if (!task) return res.status(404).json({ success: false, message: "Task not found." });
 
         const employee = task.teacher;
+        const changes = [];
+
+        // Helper to format dates cleanly for notification logs
+        const getISTDateString = (dateObj) => {
+            if (!dateObj) return null;
+            return new Date(dateObj).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        };
 
         // 1. DATE NORMALIZATION & LEAVE RESTRICTION CHECK 
         let istStartDate, istEndDate;
@@ -846,7 +853,7 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             istStartDate = new Date(`${startDate}T00:00:00.000+05:30`);
             istEndDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : new Date("2099-12-31T23:59:59.999+05:30");
         } else {
-            const todayStr = getISTDateString();
+            const todayStr = getISTDateString(new Date());
             istStartDate = new Date(`${todayStr}T00:00:00.000+05:30`);
             istEndDate = new Date(`${todayStr}T23:59:59.999+05:30`);
         }
@@ -856,48 +863,50 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             fromDate: { $lte: istEndDate }, toDate: { $gte: istStartDate }
         });
 
-        if (activeLeave && !req.body.status) {
+        if (activeLeave && !status) {
             return res.status(400).json({
                 success: false,
                 message: `Cannot update task details. ${employee.name} is currently on an approved leave.`
             });
         }
 
-        const changes = [];
-
-        // 2. FORK OR LINK SCHOOL UPDATES (No Overwriting Master Data)
+        // 2. FORK OR LINK SCHOOL UPDATES (Gracefully handles missing subdocuments/coordinates)
         const currentSchool = task.school;
+        const oldLat = currentSchool?.location?.coordinates?.[1];
+        const oldLng = currentSchool?.location?.coordinates?.[0];
 
-        let finalLat = latitude !== undefined && latitude !== '' ? parseFloat(latitude) : currentSchool.location.coordinates[1];
-        let finalLng = longitude !== undefined && longitude !== '' ? parseFloat(longitude) : currentSchool.location.coordinates[0];
+        let finalLat = latitude !== undefined && latitude !== '' ? parseFloat(latitude) : oldLat;
+        let finalLng = longitude !== undefined && longitude !== '' ? parseFloat(longitude) : oldLng;
         let finalSchoolName = schoolName || currentSchool.schoolName;
         let finalAddress = schoolAddress || currentSchool.address;
 
-        if (isNaN(finalLat) || isNaN(finalLng)) {
-            return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
-        }
-        if (finalLat < 6.0 || finalLat > 38.0 || finalLng < 68.0 || finalLng > 98.0) {
-            return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
+        if (finalLat !== undefined && finalLng !== undefined) {
+            if (isNaN(finalLat) || isNaN(finalLng)) {
+                return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
+            }
+            if (finalLat < 6.0 || finalLat > 38.0 || finalLng < 68.0 || finalLng > 98.0) {
+                return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
+            }
         }
 
         const isSchoolChanged =
             finalSchoolName !== currentSchool.schoolName ||
             finalAddress !== currentSchool.address ||
-            finalLat !== currentSchool.location.coordinates[1] ||
-            finalLng !== currentSchool.location.coordinates[0];
+            finalLat !== oldLat ||
+            finalLng !== oldLng;
 
         if (isSchoolChanged) {
             let newSchool = await mongoose.model('School').findOne({
                 schoolName: { $regex: new RegExp(`^${finalSchoolName}$`, 'i') },
                 address: finalAddress,
-                "location.coordinates": [finalLng, finalLat]
+                ...(finalLat && finalLng ? { "location.coordinates": [finalLng, finalLat] } : {})
             });
 
             if (!newSchool) {
                 newSchool = await mongoose.model('School').create({
                     schoolName: finalSchoolName,
                     address: finalAddress,
-                    location: { type: 'Point', coordinates: [finalLng, finalLat] }
+                    ...(finalLat && finalLng ? { location: { type: 'Point', coordinates: [finalLng, finalLat] } } : {})
                 });
             }
 
@@ -922,12 +931,26 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             }
         });
 
-        if (startDate) task.startDate = istStartDate;
-        if (endDate !== undefined) task.endDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
+        // Track and log explicit Date changes to guarantee triggers occur
+        if (startDate && (!task.startDate || task.startDate.getTime() !== istStartDate.getTime())) {
+            changes.push({ field: "Start Date", oldValue: task.startDate ? getISTDateString(task.startDate) : "Not Set", newValue: startDate });
+            task.startDate = istStartDate;
+        }
 
+        if (endDate !== undefined) {
+            const newEndDateObj = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
+            if ((task.endDate?.getTime() || null) !== (newEndDateObj?.getTime() || null)) {
+                changes.push({ field: "End Date", oldValue: task.endDate ? getISTDateString(task.endDate) : "Ongoing", newValue: endDate || "Ongoing" });
+                task.endDate = newEndDateObj;
+            }
+        }
+
+        // Track Days Allotted changes cleanly without mutating the live schema array directly
         if (daysAllotted && Array.isArray(daysAllotted)) {
-            if (task.daysAllotted.sort().join(',') !== daysAllotted.sort().join(',')) {
-                changes.push({ field: "Days Allotted", oldValue: task.daysAllotted.length > 0 ? task.daysAllotted.join(', ') : "None", newValue: daysAllotted.join(', ') });
+            const oldDaysStr = (task.daysAllotted || []).slice().sort().join(',');
+            const newDaysStr = daysAllotted.slice().sort().join(',');
+            if (oldDaysStr !== newDaysStr) {
+                changes.push({ field: "Days Allotted", oldValue: oldDaysStr || "None", newValue: newDaysStr || "None" });
                 task.daysAllotted = daysAllotted;
             }
         }
@@ -945,48 +968,52 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         // 3.5 SYNC TO MIRRORED ASSIGNMENT ARRAY 
         if (task.status === 'Accepted' || req.body.status === 'Accepted') {
             const employeeDoc = await User.findById(employee._id);
-            const mirroredAssignmentIndex = employeeDoc.assignments.findIndex(
-                a => a.referenceTaskId && a.referenceTaskId.toString() === task._id.toString()
-            );
+            if (employeeDoc && employeeDoc.assignments) {
+                const mirroredAssignmentIndex = employeeDoc.assignments.findIndex(
+                    a => a.referenceTaskId && a.referenceTaskId.toString() === task._id.toString()
+                );
 
-            if (mirroredAssignmentIndex !== -1) {
-                const mirrored = employeeDoc.assignments[mirroredAssignmentIndex];
+                if (mirroredAssignmentIndex !== -1) {
+                    const mirrored = employeeDoc.assignments[mirroredAssignmentIndex];
 
-                if (startDate) mirrored.startDate = istStartDate;
-                if (endDate !== undefined) mirrored.endDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
-                if (startTime) mirrored.startTime = startTime;
-                if (endTime) mirrored.endTime = endTime;
-                if (daysAllotted) mirrored.allowedDays = daysAllotted;
-                if (category) mirrored.category = category;
+                    if (startDate) mirrored.startDate = istStartDate;
+                    if (endDate !== undefined) mirrored.endDate = task.endDate;
+                    if (startTime) mirrored.startTime = startTime;
+                    if (endTime) mirrored.endTime = endTime;
+                    if (daysAllotted) mirrored.allowedDays = daysAllotted;
+                    if (category) mirrored.category = category;
 
-                if (isSchoolChanged) {
-                    mirrored.school = task.school; // Update reference
-                    mirrored.geofence = { latitude: finalLat, longitude: finalLng };
+                    if (isSchoolChanged) {
+                        mirrored.school = task.school;
+                        if (finalLat && finalLng) mirrored.geofence = { latitude: finalLat, longitude: finalLng };
+                    }
+
+                    await employeeDoc.save();
                 }
-
-                await employeeDoc.save();
             }
         }
 
-        // 4. NOTIFICATIONS & EMAILS
+        // 4. NOTIFICATIONS & EMAILS (Triggers in real-time)
         const changeSummary = changes.map(c => c.field).join(', ');
         const displaySchoolName = finalSchoolName;
         const taskTitle = `Assignment at ${displaySchoolName}`;
 
         if (await canSendEmailToUser(employee)) {
             const formattedTask = {
-                description: task.taskDescription,
-                dueDate: `${task.daysAllotted.join(', ')} (${task.startTime} - ${task.endTime})`,
+                description: task.taskDescription || 'N/A',
+                dueDate: `${(task.daysAllotted || []).join(', ')} (${task.startTime || ''} - ${task.endTime || ''})`,
                 status: task.status,
-                rejectionReason: task.rejectReason
+                rejectionReason: task.rejectReason || ''
             };
-            sendEmployeeTaskUpdatedEmail(employee.email, employee.name, taskTitle, changes, formattedTask);
+            sendEmployeeTaskUpdatedEmail(employee.email, employee.name, taskTitle, changes, formattedTask).catch(err => console.error("Email send failed", err));
         }
 
         const empNotif = await Notification.create({ recipient: employee._id, title: "Task Updated", message: `Your task at ${displaySchoolName} was updated (${changeSummary}).`, type: "Updation" });
-        if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
+        if (req.io) {
+            req.io.to(employee._id.toString()).emit('new_notification', empNotif);
+        }
 
-        const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
         const detailsHtml = changes.map(c => `
              <div class="card-item" style="padding-top: 8px; border-top: 1px solid #e4e4e7;">
                 <span class="label">${c.field} Changed</span>
@@ -997,7 +1024,7 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         await Promise.all(admins.map(async (admin) => {
             if (await canSendEmailToUser(admin)) {
-                sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "UPDATED", detailsHtml);
+                sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "UPDATED", detailsHtml).catch(err => console.error("Admin Email failed", err));
             }
             const adminNotif = await Notification.create({ recipient: admin._id, title: "System Alert: Task Updated", message: `${req.user.name} updated a task for ${employee.name}.`, type: "System" });
             if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
