@@ -233,7 +233,7 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
 adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const {
+        let {
             schoolName, schoolAddress, category, startDate, endDate,
             startTime, endTime, allowedDays, latitude, longitude
         } = req.body;
@@ -734,7 +734,7 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const {
+        let {
             schoolName, schoolAddress, latitude, longitude,
             taskDescription, category, daysAllotted,
             startDate, endDate, startTime, endTime
