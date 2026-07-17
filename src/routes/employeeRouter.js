@@ -734,7 +734,7 @@ employeeRouter.post('/events', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post('/media', userAuth, async (req, res) => {
     try {
-        const { schoolId, band, mediaType, eventDate, eventContext, files } = req.body;
+        const { schoolId, band, bandStage, mediaType, eventDate, eventContext, files } = req.body;
 
         // --- 🚨 FIXED: IST DATE NORMALIZATION ---
         const finalEventDate = eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date();
@@ -745,6 +745,7 @@ employeeRouter.post('/media', userAuth, async (req, res) => {
             band,
             mediaType,
             eventDate: finalEventDate,
+            bandStage,
             eventContext,
             files
         });
@@ -804,7 +805,7 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
 employeeRouter.post('/daily-report', userAuth, async (req, res) => {
     try {
         // 1. Extract the new fields (schoolId, band) sent from the frontend React app
-        const { schoolId, band, date, category, summary, eventName, eventDate, studentsPresent } = req.body;
+        const { schoolId, band, bandStage, date, category, summary, eventName, eventDate, studentsPresent } = req.body;
         const teacherId = req.user._id;
         const teacherName = req.user.name; // Get the employee's name for the alert
 
@@ -829,6 +830,7 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
                     band,        // Added band (Junior/Senior)
                     category,
                     studentsPresent,
+                    bandStage,
                     summary,
                     eventName,
                     eventDate,

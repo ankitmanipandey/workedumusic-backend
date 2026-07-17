@@ -1625,9 +1625,9 @@ adminRouter.get('/daily-reports/:id', userAuth, adminAuth, async (req, res) => {
         const formattedReports = reports.map(report => ({
             ...report,
             schoolName: report.schoolName || (report.schoolId && report.schoolId.schoolName) || 'Unknown School',
-
-            // Guarantee band exists for the UI
-            band: report.band || 'Unassigned'
+            band: report.band || 'Unassigned',
+            // NEW: Ensure band stage is always passed to the frontend
+            bandStage: report.bandStage || 'N/A'
         }));
 
         res.status(200).json({ success: true, data: formattedReports });
@@ -1979,12 +1979,13 @@ adminRouter.get('/employees/:id/media-filters', userAuth, adminAuth, async (req,
 // ==========================================
 adminRouter.get('/media', userAuth, adminAuth, async (req, res) => {
     try {
-        const { teacher, school, band, year } = req.query;
+        const { teacher, school, band, bandStage, year } = req.query;
         const query = {};
 
         if (teacher) query.teacher = teacher;
         if (school) query.school = school;
         if (band) query.band = band;
+        if (bandStage) query.bandStage = bandStage;
 
         if (year) {
             // --- STRICT IST YEAR BOUNDARIES ---

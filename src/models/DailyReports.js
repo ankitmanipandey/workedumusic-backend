@@ -11,6 +11,7 @@ const dailyReportSchema = new mongoose.Schema({
     schoolName: { type: String, required: true },
     band: { type: String, enum: ['Junior Band', 'Senior Band'], required: true },
     studentsPresent: { type: Number, required: true },
+    bandStage: { type: String, required: true },
     summary: { type: String, required: true },
 
     // Optional Event Fields

@@ -23,6 +23,7 @@ const mediaLogSchema = new mongoose.Schema({
     eventDate: { type: Date, required: true },
     eventContext: { type: String },
     description: { type: String },
+    bandStage: { type: String, required: true },
     studentRecord: { type: Number }, // Number of students present
 
     // The Array of Videos
