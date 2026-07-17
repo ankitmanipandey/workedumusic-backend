@@ -776,8 +776,7 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
             location: task.school ? task.school.address : "Unknown Location",
             daysAllotted: task.daysAllotted,
             duration: task.duration,
-            timing: task.timing,
-            category: task.category,
+            timing: task.startTime && task.endTime ? `${task.startTime} - ${task.endTime}` : "", category: task.category,
             taskDescription: task.taskDescription,
             status: task.status.toLowerCase(), // Ensure 'pending', 'accepted', 'rejected'
             rejectReason: task.rejectReason
