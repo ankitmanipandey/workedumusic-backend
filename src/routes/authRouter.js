@@ -77,6 +77,7 @@ authRouter.post('/login', async (req, res) => {
             .json({
                 message: "Login successful",
                 access_token: accessToken,
+                refresh_token: refreshToken,
                 isFirstLogin: false,
                 role: user.role,
                 user: {
@@ -154,10 +155,10 @@ authRouter.post('/reset-initial-password', userAuth, async (req, res) => {
     }
 });
 
-authRouter.get('/refresh-token', async (req, res) => {
+authRouter.post('/refresh-token', async (req, res) => {
     try {
-        // 1. Extract the refresh token from the secure cookie
-        const incomingRefreshToken = req.cookies?.refreshToken;
+        // CHANGE 2: Read from req.body, NOT req.cookies
+        const { refreshToken: incomingRefreshToken } = req.body;
 
         if (!incomingRefreshToken) {
             return res.status(401).json({
@@ -166,7 +167,6 @@ authRouter.get('/refresh-token', async (req, res) => {
             });
         }
 
-        // 2. Verify the refresh token using the REFRESH secret
         jwt.verify(
             incomingRefreshToken,
             process.env.REFRESH_TOKEN_SECRET,
@@ -178,7 +178,6 @@ authRouter.get('/refresh-token', async (req, res) => {
                     });
                 }
 
-                // 3. Ensure the user still exists in the database
                 const user = await User.findById(decodedToken.id);
                 if (!user) {
                     return res.status(401).json({
@@ -187,14 +186,15 @@ authRouter.get('/refresh-token', async (req, res) => {
                     });
                 }
 
-                // 4. Generate a fresh Access Token
                 const newAccessToken = generateAccessToken(user._id, user.role);
+                // CHANGE 3: You must actually generate the new refresh token before sending it!
+                const newRefreshToken = generateRefreshToken(user._id, user.role);
 
-                // 5. Send it back to the client
                 return res.status(200).json({
                     success: true,
                     message: "Access token refreshed successfully",
-                    access_token: newAccessToken
+                    access_token: newAccessToken,
+                    refresh_token: newRefreshToken // Now this won't cause a crash
                 });
             }
         );
