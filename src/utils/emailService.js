@@ -41,6 +41,8 @@ const { getAdminTopPerformersTemplate } = require('../templates/admin/adminWeekl
 const getNewLearningMediaTemplate = require('../templates/admin/adminNewLearningMediaUpload');
 const getSOSEmergencyTemplate = require('../templates/shared/sosEmergencyTemplate');
 const { getHolidayAlertTemplate } = require('../templates/shared/holidayTemplates');
+const getEmployeeAutoCheckoutEmail = require('../templates/employee/employeeAutoCheckoutEmail');
+const getAdminAutoCheckoutEmail = require('../templates/admin/adminAutoCheckoutEmail');
 
 require('dotenv').config();
 
@@ -681,6 +683,36 @@ const sendHolidayAlertToAdmin = async (email, adminName, actionType, title, scho
     }
 };
 
+const sendEmployeeAutoCheckoutAlert = async (email, employeeName, schoolName, category, scheduledEndTime, actualCheckoutTime) => {
+    try {
+        await transporter.sendMail({
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `System Auto Check-Out: ${schoolName}`,
+            html: getEmployeeAutoCheckoutEmail(employeeName, schoolName, category, scheduledEndTime, actualCheckoutTime)
+        });
+        return true;
+    } catch (e) {
+        console.error("Employee Auto-Checkout Email Error:", e);
+        return false;
+    }
+};
+
+const sendAdminAutoCheckoutAlert = async (email, adminName, employeeName, schoolName, category, scheduledEndTime, actualCheckoutTime) => {
+    try {
+        await transporter.sendMail({
+            from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `[Audit] Force Check-Out: ${employeeName}`,
+            html: getAdminAutoCheckoutEmail(adminName, employeeName, schoolName, category, scheduledEndTime, actualCheckoutTime)
+        });
+        return true;
+    } catch (e) {
+        console.error("Admin Auto-Checkout Email Error:", e);
+        return false;
+    }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -728,5 +760,7 @@ module.exports = {
     sendNewLearningVideoEmailToEmployee,
     sendSOSEmergencyEmail,
     sendHolidayAlertToEmployee,
-    sendHolidayAlertToAdmin
+    sendHolidayAlertToAdmin,
+    sendEmployeeAutoCheckoutAlert,
+    sendAdminAutoCheckoutAlert
 };

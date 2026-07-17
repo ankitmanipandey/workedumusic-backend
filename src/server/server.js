@@ -40,6 +40,7 @@ const autoChatMediaCleanup = require('../jobs/autoChatMediaCleanup');
 const groupRouter = require('../routes/groupRouter');
 const appRouter = require('../routes/appRouter');
 const startAutoHolidayCron = require('../jobs/autoHolidayCron');
+const startAutoCheckoutCron = require('../jobs/autoCheckoutCron');
 
 const app = express();
 const server = http.createServer(app);
@@ -606,6 +607,7 @@ connectDB().then(() => {
         startWeeklyScoreCron(io);
         autoChatMediaCleanup();
         startAutoHolidayCron();
+        startAutoCheckoutCron(io);
     });
 }).catch(err => {
     console.error("Failed to connect to the database", err);

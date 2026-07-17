@@ -794,8 +794,9 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             hr = hr % 12 || 12;
             return `${hr < 10 ? '0' + hr : hr}:${m} ${ampm}`;
         };
-        const scheduleString = `${daysAllotted.join(', ')} (${format12H(startTime)} - ${format12H(endTime)})`;
-
+        const displayDays = daysAllotted && daysAllotted.length > 0 ? daysAllotted.join(', ') : "TBD";
+        const scheduleString = `${displayDays} (${format12H(startTime)} - ${format12H(endTime)})`;
+        
         if (await canSendEmailToUser(employee)) {
             sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
         }

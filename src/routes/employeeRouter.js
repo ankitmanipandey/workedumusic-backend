@@ -330,6 +330,20 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
 
         const checkOutTimeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' });
 
+        if (req.io) {
+            // This triggers the Employee Dashboard to call fetchSchedule() immediately
+            req.io.to(req.user._id.toString()).emit('employee_schedule_refresh');
+
+            // Optional: Send a notification record for the app history
+            await Notification.create({
+                recipient: req.user._id,
+                title: "Check-Out Successful",
+                message: `You have successfully checked out of ${school.schoolName}.`,
+                type: "System"
+            });
+        }
+
+
         const admins = await notifyAdminsInApp(
             req,
             `Check-Out: ${employee.name}`,
