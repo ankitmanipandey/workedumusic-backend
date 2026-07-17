@@ -236,8 +236,8 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             return res.status(400).json({ success: false, message: "School Name, Location, Category, Start Date, Start Time, and End Time are required." });
         }
 
-        if (!Array.isArray(allowedDays) || allowedDays.length === 0) {
-            return res.status(400).json({ success: false, message: "Please select at least one working day." });
+        if (!Array.isArray(allowedDays)) {
+            return res.status(400).json({ success: false, message: "Please enter a valid Day" });
         }
 
         if (latitude === undefined || longitude === undefined || latitude === '' || longitude === '') {
@@ -362,8 +362,8 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
         if (!startDate || !startTime || !endTime) {
             return res.status(400).json({ success: false, message: "Start Date, Start Time, and End Time are required." });
         }
-        if (!Array.isArray(allowedDays) || allowedDays.length === 0) {
-            return res.status(400).json({ success: false, message: "Please select at least one working day." });
+        if (!Array.isArray(allowedDays)) {
+            return res.status(400).json({ success: false, message: "Please enter a valid day" });
         }
 
         // 2. FETCH EMPLOYEE & POPULATE SCHOOL
