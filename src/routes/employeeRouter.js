@@ -1188,7 +1188,7 @@ employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
     try {
-        const { schoolId, band, eventName, eventDate, studentsCount, description, uploadedFiles, thumbnails } = req.body;
+        const { schoolId, band, bandStage, eventName, eventDate, studentsCount, description, uploadedFiles, thumbnails } = req.body;
 
         const mediaType = eventName ? 'Special Event' : 'Regular Visit';
         const finalEventDate = eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date();
@@ -1232,6 +1232,7 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
             school: schoolId,
             band: band,
             mediaType: mediaType,
+            bandStage: bandStage,
             eventContext: eventName || null,
             description: description || null,
             eventDate: finalEventDate,
