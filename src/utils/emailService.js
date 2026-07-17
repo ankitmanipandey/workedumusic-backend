@@ -40,6 +40,7 @@ const getWeeklyScoreEmailTemplate = require('../templates/employee/employeeWeekl
 const { getAdminTopPerformersTemplate } = require('../templates/admin/adminWeeklyTopPerformersEmail');
 const getNewLearningMediaTemplate = require('../templates/admin/adminNewLearningMediaUpload');
 const getSOSEmergencyTemplate = require('../templates/shared/sosEmergencyTemplate');
+const { getHolidayAlertTemplate } = require('../templates/shared/holidayTemplates');
 
 require('dotenv').config();
 
@@ -650,6 +651,36 @@ const sendSOSEmergencyEmail = async (email, recipientName, senderName, lat, lng)
     }
 };
 
+const sendHolidayAlertToEmployee = async (email, employeeName, actionType, title, schoolName, category, fromDate, toDate) => {
+    try {
+        await transporter.sendMail({
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `System Update: Holiday ${actionType} (${schoolName})`,
+            html: getHolidayAlertTemplate(employeeName, actionType, title, schoolName, category, fromDate, toDate)
+        });
+        return true;
+    } catch (e) {
+        console.error("Employee Holiday Email Error:", e);
+        return false;
+    }
+};
+
+const sendHolidayAlertToAdmin = async (email, adminName, actionType, title, schoolName, category, fromDate, toDate, actionAdminName) => {
+    try {
+        await transporter.sendMail({
+            from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `[Audit] Holiday ${actionType}: ${schoolName}`,
+            html: getHolidayAlertTemplate(adminName, actionType, title, schoolName, category, fromDate, toDate, actionAdminName)
+        });
+        return true;
+    } catch (e) {
+        console.error("Admin Holiday Email Error:", e);
+        return false;
+    }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -695,5 +726,7 @@ module.exports = {
     sendWeeklyScoreToEmployee,
     sendTopPerformersToAdmin,
     sendNewLearningVideoEmailToEmployee,
-    sendSOSEmergencyEmail
+    sendSOSEmergencyEmail,
+    sendHolidayAlertToEmployee,
+    sendHolidayAlertToAdmin
 };

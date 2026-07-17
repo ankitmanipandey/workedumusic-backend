@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail, sendEmployeeAttendanceOverrideEmail, sendAdminAttendanceOverrideAlert, sendLeaveApprovedEmailToEmployee, sendLeaveRejectedEmailToEmployee, sendVideoGradedEmailToEmployee, sendVideoDeletedEmailToEmployee } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail, sendEmployeeAttendanceOverrideEmail, sendAdminAttendanceOverrideAlert, sendLeaveApprovedEmailToEmployee, sendLeaveRejectedEmailToEmployee, sendVideoGradedEmailToEmployee, sendVideoDeletedEmailToEmployee, sendHolidayAlertToAdmin, sendHolidayAlertToEmployee } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
@@ -30,6 +30,7 @@ const Conversation = require('../models/Conversation');
 const chatS3Client = require('../config/chatS3Client');
 const Group = require('../models/Group');
 const Message = require('../models/Message');
+const SchoolHoliday = require('../models/SchoolHoliday');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -2579,6 +2580,209 @@ adminRouter.delete('/audit/chat', userAuth, adminAuth, async (req, res) => {
     } catch (error) {
         console.error("Audit Hard Clear Chat Error:", error);
         res.status(500).json({ success: false, message: "Server error executing hard clear." });
+    }
+});
+
+// 41. Create a Holiday (Updated with Context & Notifications)
+adminRouter.post('/school-holidays', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { title, startDate, endDate, affectedSchools, category } = req.body;
+        const holiday = await SchoolHoliday.create({
+            title,
+            startDate: new Date(`${startDate}T00:00:00.000+05:30`),
+            endDate: new Date(`${endDate}T23:59:59.999+05:30`),
+            affectedSchools,
+            category: category || 'All',
+            createdBy: req.user._id
+        });
+
+        // --- NOTIFICATIONS & EMAILS LOGIC ---
+        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+        let schoolNamesStr = "All Schools";
+        if (affectedSchools && affectedSchools.length > 0) {
+            const schools = await School.find({ _id: { $in: affectedSchools } });
+            schoolNamesStr = schools.map(s => s.schoolName).join(', ');
+        }
+
+        // 1. Notify Affected Employees Only
+        const employees = await User.find({ role: 'Employee', isActive: true });
+        const affectedEmployees = employees.filter(emp => {
+            return emp.assignments.some(a => {
+                const isSchoolMatch = holiday.affectedSchools.length === 0 || holiday.affectedSchools.map(id => id.toString()).includes(a.school.toString());
+                const isCategoryMatch = holiday.category === 'All' || a.category === holiday.category;
+                return isSchoolMatch && isCategoryMatch;
+            });
+        });
+
+        for (const emp of affectedEmployees) {
+            const empMsg = `A new holiday (${title}) has been scheduled for ${schoolNamesStr} from ${fromStr} to ${toStr}.`;
+            const empNotif = await Notification.create({ recipient: emp._id, title: "Holiday Scheduled", message: empMsg, type: "System" });
+
+            if (req.io) req.io.to(emp._id.toString()).emit('new_notification', empNotif);
+
+            if (await canSendEmailToUser(emp)) {
+                sendHolidayAlertToEmployee(emp.email, emp.name, "Scheduled", title, schoolNamesStr, holiday.category, fromStr, toStr).catch(console.error);
+            }
+        }
+
+        // 2. Notify Admins (Audit)
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
+        const adminMsg = `${req.user.name} scheduled a holiday (${title}) for ${schoolNamesStr} (${fromStr} to ${toStr}).`;
+
+        await Promise.all(admins.map(async (admin) => {
+            const adminNotif = await Notification.create({ recipient: admin._id, title: "System Alert: Holiday Scheduled", message: adminMsg, type: "System" });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+
+            if (await canSendEmailToUser(admin)) {
+                sendHolidayAlertToAdmin(admin.email, admin.name, "Scheduled", title, schoolNamesStr, holiday.category, fromStr, toStr, req.user.name).catch(console.error);
+            }
+        }));
+
+        res.status(201).json({ success: true, data: holiday });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 42. Get Holidays (Unchanged)
+adminRouter.get('/school-holidays', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { schoolId, category } = req.query;
+        let query = {};
+
+        if (schoolId) query.affectedSchools = schoolId;
+        if (category && category !== 'All') {
+            query.category = { $in: [category, 'All'] };
+        }
+
+        const holidays = await SchoolHoliday.find(query).sort({ startDate: -1 });
+        res.json({ success: true, data: holidays });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 43. Update Holiday (Updated with Context & Notifications)
+adminRouter.put('/school-holidays/:id', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { title, startDate, endDate, category } = req.body;
+        const updated = await SchoolHoliday.findByIdAndUpdate(req.params.id, {
+            title,
+            startDate: new Date(`${startDate}T00:00:00.000+05:30`),
+            endDate: new Date(`${endDate}T23:59:59.999+05:30`),
+            category
+        }, { new: true });
+
+        // --- NOTIFICATIONS & EMAILS LOGIC ---
+        const fromStr = new Date(updated.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        const toStr = new Date(updated.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+        let schoolNamesStr = "All Schools";
+        if (updated.affectedSchools && updated.affectedSchools.length > 0) {
+            const schools = await School.find({ _id: { $in: updated.affectedSchools } });
+            schoolNamesStr = schools.map(s => s.schoolName).join(', ');
+        }
+
+        // 1. Notify Affected Employees Only
+        const employees = await User.find({ role: 'Employee', isActive: true });
+        const affectedEmployees = employees.filter(emp => {
+            return emp.assignments.some(a => {
+                const isSchoolMatch = updated.affectedSchools.length === 0 || updated.affectedSchools.map(id => id.toString()).includes(a.school.toString());
+                const isCategoryMatch = updated.category === 'All' || a.category === updated.category;
+                return isSchoolMatch && isCategoryMatch;
+            });
+        });
+
+        for (const emp of affectedEmployees) {
+            const empMsg = `The holiday (${title}) for ${schoolNamesStr} has been updated. New dates: ${fromStr} to ${toStr}.`;
+            const empNotif = await Notification.create({ recipient: emp._id, title: "Holiday Updated", message: empMsg, type: "Updation" });
+
+            if (req.io) req.io.to(emp._id.toString()).emit('new_notification', empNotif);
+
+            if (await canSendEmailToUser(emp)) {
+                sendHolidayAlertToEmployee(emp.email, emp.name, "Updated", title, schoolNamesStr, updated.category, fromStr, toStr).catch(console.error);
+            }
+        }
+
+        // 2. Notify Admins (Audit)
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
+        const adminMsg = `${req.user.name} updated the holiday (${title}) for ${schoolNamesStr}.`;
+
+        await Promise.all(admins.map(async (admin) => {
+            const adminNotif = await Notification.create({ recipient: admin._id, title: "System Alert: Holiday Updated", message: adminMsg, type: "System" });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+
+            if (await canSendEmailToUser(admin)) {
+                sendHolidayAlertToAdmin(admin.email, admin.name, "Updated", title, schoolNamesStr, updated.category, fromStr, toStr, req.user.name).catch(console.error);
+            }
+        }));
+
+        res.json({ success: true, data: updated });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// 44. Delete Holiday (Updated with Context & Notifications)
+adminRouter.delete('/school-holidays/:id', userAuth, adminAuth, async (req, res) => {
+    try {
+        const holiday = await SchoolHoliday.findById(req.params.id);
+        if (!holiday) return res.status(404).json({ success: false, message: "Holiday not found" });
+
+        await SchoolHoliday.findByIdAndDelete(req.params.id);
+
+        // --- NOTIFICATIONS & EMAILS LOGIC ---
+        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+        let schoolNamesStr = "All Schools";
+        if (holiday.affectedSchools && holiday.affectedSchools.length > 0) {
+            const schools = await School.find({ _id: { $in: holiday.affectedSchools } });
+            schoolNamesStr = schools.map(s => s.schoolName).join(', ');
+        }
+
+        // 1. Notify Affected Employees Only
+        const employees = await User.find({ role: 'Employee', isActive: true });
+        const affectedEmployees = employees.filter(emp => {
+            return emp.assignments.some(a => {
+                const isSchoolMatch = holiday.affectedSchools.length === 0 || holiday.affectedSchools.map(id => id.toString()).includes(a.school.toString());
+                const isCategoryMatch = holiday.category === 'All' || a.category === holiday.category;
+                return isSchoolMatch && isCategoryMatch;
+            });
+        });
+
+        for (const emp of affectedEmployees) {
+            const empMsg = `The holiday (${holiday.title}) scheduled for ${schoolNamesStr} has been cancelled.`;
+            const empNotif = await Notification.create({ recipient: emp._id, title: "Holiday Cancelled", message: empMsg, type: "Deletion" });
+
+            if (req.io) req.io.to(emp._id.toString()).emit('new_notification', empNotif);
+
+            if (await canSendEmailToUser(emp)) {
+                sendHolidayAlertToEmployee(emp.email, emp.name, "Cancelled", holiday.title, schoolNamesStr, holiday.category, fromStr, toStr).catch(console.error);
+            }
+        }
+
+        // 2. Notify Admins (Audit)
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
+        const adminMsg = `${req.user.name} cancelled the holiday (${holiday.title}) for ${schoolNamesStr}.`;
+
+        await Promise.all(admins.map(async (admin) => {
+            const adminNotif = await Notification.create({ recipient: admin._id, title: "System Alert: Holiday Cancelled", message: adminMsg, type: "System" });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+
+            if (await canSendEmailToUser(admin)) {
+                sendHolidayAlertToAdmin(admin.email, admin.name, "Cancelled", holiday.title, schoolNamesStr, holiday.category, fromStr, toStr, req.user.name).catch(console.error);
+            }
+        }));
+
+        res.json({ success: true, message: "Holiday deleted" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
