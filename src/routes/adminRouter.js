@@ -442,19 +442,19 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
         };
 
         Object.keys(fieldLabels).forEach(key => {
-            if (req.body[key] !== undefined) {
-                let oldVal = assignment[key];
-                let newVal = req.body[key];
+            if (Array.isArray(oldVal)) {
+                // FIX: Create temporary copies before sorting so we don't scramble the DB data
+                const oldSorted = [...oldVal].sort().join(',');
+                const newSorted = [...newVal].sort().join(',');
 
-                if (Array.isArray(oldVal)) {
-                    if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
-                        changes.push({ field: fieldLabels[key], oldValue: oldVal.join(', '), newValue: newVal.join(', ') });
-                    }
-                } else if (oldVal !== newVal) {
-                    changes.push({ field: fieldLabels[key], oldValue: oldVal, newValue: newVal });
+                if (oldSorted !== newSorted) {
+                    changes.push({ field: fieldLabels[key], oldValue: oldVal.join(', '), newValue: newVal.join(', ') });
                 }
-                assignment[key] = newVal;
+            } else if (oldVal !== newVal) {
+                changes.push({ field: fieldLabels[key], oldValue: oldVal, newValue: newVal });
             }
+            // Now when this saves below, it will save in the correct chronological order!
+            assignment[key] = newVal;
         });
 
         assignment.startDate = istStartDate;
@@ -1928,7 +1928,7 @@ adminRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
         res.status(200).json({ success: true, data: formattedEmployees });
     } catch (error) {
         console.error("Fetch Employees Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching employees." }); 
+        res.status(500).json({ success: false, message: "Server error fetching employees." });
     }
 });
 
