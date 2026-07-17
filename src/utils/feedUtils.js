@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User'); // Adjust path if necessary
 const Attendance = require('../models/Attendance'); // Adjust path if necessary
 const LeaveRequest = require('../models/LeaveRequest'); // Adjust path if necessary
+const SchoolHoliday = require('../models/SchoolHoliday'); // 1. IMPORT HOLIDAY MODEL
 
 const fetchDailyFeedData = async (status) => {
     const today = new Date();
@@ -12,20 +13,26 @@ const fetchDailyFeedData = async (status) => {
     const dateString = today.toISOString().split('T')[0];
 
     // ==========================================
-    // 1. LEAVE CHECKER ENGINE
+    // 1. LEAVE & HOLIDAY CHECKER ENGINE
     // ==========================================
     const todayStart = new Date(today);
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date(today);
     todayEnd.setHours(23, 59, 59, 999);
 
+    // Fetch Active Leaves
     const activeLeaves = await LeaveRequest.find({
         status: 'approved',
         fromDate: { $lte: todayEnd },
         toDate: { $gte: todayStart }
     });
-
     const usersOnLeave = new Set(activeLeaves.map(leave => leave.employee.toString()));
+
+    // 2. Fetch Active Holidays for Today
+    const activeHolidays = await SchoolHoliday.find({
+        startDate: { $lte: todayEnd },
+        endDate: { $gte: todayStart }
+    });
 
     // ==========================================
     // 2. FETCH CORE DATA
@@ -44,11 +51,11 @@ const fetchDailyFeedData = async (status) => {
     // ==========================================
     // 3. THE MERGING ENGINE (With Start & End Date Fixes)
     // ==========================================
-    
+
     // NEW FIX: Map over actualAttendance to attach expected schedules from the assignedUsers
     const actualAttendanceWithSchedules = actualAttendance.map(record => {
         const doc = record.toObject ? record.toObject() : record;
-        
+
         const user = assignedUsers.find(u => u._id.toString() === doc.teacher?._id?.toString());
         if (user && user.assignments) {
             const assignment = user.assignments.find(a => a.school?._id?.toString() === doc.school?._id?.toString());
@@ -89,6 +96,19 @@ const fetchDailyFeedData = async (status) => {
 
             if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
 
+                // --- 3. CHECK HOLIDAY STATUS FOR THIS SPECIFIC ASSIGNMENT ---
+                const adminHoliday = activeHolidays.find(h => {
+                    const isSchoolMatch = h.affectedSchools.some(id => id.toString() === assign.school._id.toString());
+                    const hCat = (h.category || "").trim().toLowerCase();
+                    const aCat = (assign.category || "").trim().toLowerCase();
+                    const isCategoryMatch = hCat === aCat || hCat === "all" || hCat === "";
+
+                    // Respect the exclusion list if a cloned shift was removed from holiday
+                    const isExcluded = h.excludedAssignments?.some(exId => exId.toString() === assign._id.toString());
+
+                    return isSchoolMatch && isCategoryMatch && !isExcluded;
+                });
+
                 const hasStarted = actualAttendance.find(a =>
                     a.teacher && a.teacher._id &&
                     a.school && a.school._id &&
@@ -98,6 +118,18 @@ const fetchDailyFeedData = async (status) => {
                 );
 
                 if (!hasStarted) {
+                    // Determine what the status should be
+                    let feedStatus = 'Pending';
+                    let feedNote = null;
+
+                    if (isOnLeave) {
+                        feedStatus = 'On Leave';
+                        feedNote = 'System Note: On Approved Leave';
+                    } else if (adminHoliday) {
+                        feedStatus = 'Holiday';
+                        feedNote = `System Note: ${adminHoliday.title || 'School Holiday'}`;
+                    }
+
                     combinedFeed.push({
                         _id: `pending_${user._id}_${assign._id}`,
                         teacher: {
@@ -110,8 +142,8 @@ const fetchDailyFeedData = async (status) => {
                         school: assign.school,
                         band: assign.category,
 
-                        status: isOnLeave ? 'On Leave' : 'Pending',
-                        teacherNote: isOnLeave ? 'System Note: On Approved Leave' : null,
+                        status: feedStatus,
+                        teacherNote: feedNote,
 
                         checkInTime: null,
                         checkOutTime: null,
