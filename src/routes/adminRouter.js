@@ -1384,7 +1384,7 @@ adminRouter.get('/daily-feed', async (req, res) => {
 });
 
 // ==========================================
-// 17. GET Admin Dashboard (SHIFT-BASED LOGIC FIXED)
+// 17. GET Admin Dashboard (INTERACTIVE SHIFT LOGIC)
 // ==========================================
 adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     try {
@@ -1394,8 +1394,8 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         const todayStart = new Date(`${dateString}T00:00:00.000+05:30`);
         const todayEnd = new Date(`${dateString}T23:59:59.999+05:30`);
 
-        // 1. Total Staff (Unique Employees)
-        const employees = await User.find({ role: 'Employee', isActive: true });
+        // 1. Total Staff (Unique Employees) - NOW POPULATING SCHOOL TO GET NAMES LATER
+        const employees = await User.find({ role: 'Employee', isActive: true }).populate('assignments.school', 'schoolName');
         const totalEmployees = employees.length;
 
         // 2. Fetch Active Leaves & Holidays
@@ -1404,7 +1404,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             fromDate: { $lte: todayEnd },
             toDate: { $gte: todayStart }
         });
-        const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
+        const usersOnLeaveMap = new Map(activeLeaves.map(leave => [leave.employee.toString(), leave.reason || 'Approved Leave']));
 
         const activeSchoolHolidays = await SchoolHoliday.find({
             startDate: { $lte: todayEnd },
@@ -1419,50 +1419,73 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
 
         const recentLeaves = await LeaveRequest.find({
             updatedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) }
-        })
-            .populate('employee', 'name zone profilePicture')
-            .sort({ updatedAt: -1 });
+        }).populate('employee', 'name zone profilePicture').sort({ updatedAt: -1 });
 
-        // --- NEW SHIFT-BASED LOGIC ---
-        let completedCount = 0;
-        let onSiteCount = 0;
-        let noShowCount = 0;
-        let holidayCount = 0;
-        let leaveCount = 0;
-        let pendingCount = 0;
-
-        // Keep track of shifts that already have an explicit attendance record
+        // --- NEW DETAILED SHIFT LISTS ---
+        const lists = { completed: [], present: [], noShow: [], holiday: [], leave: [], pending: [] };
         const processedShifts = new Set();
+
+        const formatTimeIST = (dateObj) => {
+            if (!dateObj) return '-';
+            return new Date(dateObj).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+        };
 
         // STEP A: Tally actual attendance records first
         todaysAttendance.forEach(record => {
             const empIdStr = record.teacher ? record.teacher._id.toString() : 'unknown';
             const schoolIdStr = record.school ? record.school._id.toString() : 'unknown';
-
-            // THE FIX: Include the band/category to prevent double-shift collisions
             const band = (record.band || 'General').toLowerCase().trim();
             const shiftKey = `${empIdStr}_${schoolIdStr}_${band}`;
             processedShifts.add(shiftKey);
 
-            // THE FIX: Safe Uppercase matching to prevent 'holiday' vs 'Holiday' bugs
             const status = (record.status || '').toUpperCase();
 
-            if (['PRESENT', 'LATE', 'EVENT'].includes(status)) {
-                if (record.checkOutTime) {
-                    completedCount++; // Checked in AND out
-                } else {
-                    onSiteCount++;    // Checked in, not out
+            // Find scheduled times from assignments
+            let schedStart = '-';
+            let schedEnd = '-';
+            const empDoc = employees.find(e => e._id.toString() === empIdStr);
+            if (empDoc && empDoc.assignments) {
+                const assign = empDoc.assignments.find(a => a.school && a.school._id.toString() === schoolIdStr && (a.category || 'General').toLowerCase().trim() === band);
+                if (assign) {
+                    schedStart = assign.startTime || '-';
+                    schedEnd = assign.endTime || '-';
                 }
+            }
+
+            // Extract exact reason
+            let reason = '-';
+            if (status === 'LATE' && record.lateReason) reason = record.lateReason;
+            else if (status === 'EVENT' && record.eventNote) reason = record.eventNote;
+            else if (record.teacherNote) reason = record.teacherNote;
+
+            const shiftDetail = {
+                id: record._id,
+                employeeName: record.teacher?.name || 'Unknown',
+                profilePicture: record.teacher?.profilePicture || null,
+                schoolName: record.school?.schoolName || 'Unknown School',
+                category: record.band || 'General',
+                scheduledStart: schedStart,
+                scheduledEnd: schedEnd,
+                actualStart: formatTimeIST(record.checkInTime),
+                actualEnd: formatTimeIST(record.checkOutTime),
+                status: status,
+                reason: reason
+            };
+
+            if (['PRESENT', 'LATE', 'EVENT'].includes(status)) {
+                if (record.checkOutTime) lists.completed.push(shiftDetail);
+                else lists.present.push(shiftDetail);
             } else if (status === 'ABSENT') {
-                noShowCount++;        // Marked absent explicitly
+                lists.noShow.push(shiftDetail);
             } else if (status === 'HOLIDAY') {
-                holidayCount++;       // Marked holiday explicitly
+                lists.holiday.push(shiftDetail);
             } else if (status === 'LEAVE') {
-                leaveCount++;         // Marked leave explicitly
+                shiftDetail.reason = usersOnLeaveMap.get(empIdStr) || 'Approved Leave';
+                lists.leave.push(shiftDetail);
             }
         });
 
-        // STEP B: Evaluate all remaining expected assignments
+        // STEP B: Evaluate all remaining expected assignments (Pending, Leaves, Holidays)
         employees.forEach(emp => {
             if (!emp.assignments || emp.assignments.length === 0) return;
             const empIdStr = emp._id.toString();
@@ -1470,14 +1493,12 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             emp.assignments.forEach(assign => {
                 if (!assign.school) return;
 
-                const schoolIdStr = assign.school.toString();
+                const schoolIdStr = assign.school._id.toString();
                 const band = (assign.category || 'General').toLowerCase().trim();
                 const shiftKey = `${empIdStr}_${schoolIdStr}_${band}`;
 
-                // If this specific shift already has an attendance record today, skip it (already tallied in Step A)
                 if (processedShifts.has(shiftKey)) return;
 
-                // Check if this assignment is actually scheduled for today
                 const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
                 const assignStartStr = getISTDateString(assignmentStartDate);
                 const isAfterStartDate = dateString >= assignStartStr;
@@ -1489,14 +1510,26 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 }
 
                 if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
-                    // This is a valid shift for today with NO attendance record yet. Let's categorize it.
 
-                    // Priority 1: Is the employee on an Approved Leave?
-                    if (usersOnLeaveSet.has(empIdStr)) {
-                        leaveCount++;
-                    }
-                    // Priority 2: Is the assigned school on a Vacation/Holiday?
-                    else {
+                    const shiftDetail = {
+                        id: shiftKey,
+                        employeeName: emp.name,
+                        profilePicture: emp.profilePicture || null,
+                        schoolName: assign.school.schoolName || 'Unknown School',
+                        category: assign.category || 'General',
+                        scheduledStart: assign.startTime || '-',
+                        scheduledEnd: assign.endTime || '-',
+                        actualStart: '-',
+                        actualEnd: '-',
+                        status: 'PENDING',
+                        reason: '-'
+                    };
+
+                    if (usersOnLeaveMap.has(empIdStr)) {
+                        shiftDetail.status = 'LEAVE';
+                        shiftDetail.reason = usersOnLeaveMap.get(empIdStr);
+                        lists.leave.push(shiftDetail);
+                    } else {
                         const isSchoolHoliday = activeSchoolHolidays.some(holiday => {
                             const isSchoolMatch = holiday.affectedSchools.length === 0 || holiday.affectedSchools.map(id => id.toString()).includes(schoolIdStr);
                             const isCategoryMatch = holiday.category === 'All' || assign.category === holiday.category;
@@ -1504,18 +1537,18 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                         });
 
                         if (isSchoolHoliday) {
-                            holidayCount++;
-                        }
-                        // Priority 3: No leave, no holiday, no manual record = Pending
-                        else {
-                            pendingCount++;
+                            shiftDetail.status = 'HOLIDAY';
+                            shiftDetail.reason = 'School Holiday';
+                            lists.holiday.push(shiftDetail);
+                        } else {
+                            lists.pending.push(shiftDetail);
                         }
                     }
                 }
             });
         });
 
-        // 4. Format Activity Feed 
+        // 4. Format Activity Feed
         const attendanceActivity = todaysAttendance.map(att => {
             const diffMins = Math.round((new Date() - new Date(att.updatedAt)) / 60000);
             const statusUpper = (att.status || '').toUpperCase();
@@ -1577,13 +1610,14 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             data: {
                 stats: {
                     totalEmployees,
-                    completedToday: completedCount,
-                    presentToday: onSiteCount,
-                    noShow: noShowCount,
-                    onLeaveToday: leaveCount,
-                    onHolidayToday: holidayCount,
-                    pending: pendingCount
+                    completedToday: lists.completed.length,
+                    presentToday: lists.present.length,
+                    noShow: lists.noShow.length,
+                    onLeaveToday: lists.leave.length,
+                    onHolidayToday: lists.holiday.length,
+                    pending: lists.pending.length
                 },
+                lists: lists, // EXPOSING THE ARRAYS TO THE FRONTEND
                 recentActivity: combinedActivity
             }
         });
@@ -3085,9 +3119,9 @@ adminRouter.get('/employees/:id/media-report-30-days', userAuth, adminAuth, asyn
             teacher: employeeId,
             eventDate: { $gte: thirtyDaysAgo }
         })
-        .populate('school', 'schoolName')
-        .populate('files.gradedBy', 'name')
-        .sort({ eventDate: -1 });
+            .populate('school', 'schoolName')
+            .populate('files.gradedBy', 'name')
+            .sort({ eventDate: -1 });
 
         // Group by school name
         const grouped = {};

@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
+const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper');
 const startAutoHolidayCron = () => {
     cron.schedule('5 0 * * *', async () => {
         console.log("📅 [CRON] Checking for Categorized School Holidays...");
