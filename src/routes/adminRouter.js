@@ -32,6 +32,12 @@ const Group = require('../models/Group');
 const Message = require('../models/Message');
 const SchoolHoliday = require('../models/SchoolHoliday');
 
+const sortDaysChronologically = (daysArray) => {
+    if (!daysArray || !Array.isArray(daysArray)) return [];
+    const dayOrder = { "Mon": 1, "Tue": 2, "Wed": 3, "Thu": 4, "Fri": 5, "Sat": 6, "Sun": 7 };
+    return [...daysArray].sort((a, b) => (dayOrder[a] || 8) - (dayOrder[b] || 8));
+};
+
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
 // ==========================================
@@ -231,6 +237,8 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             startTime, endTime, allowedDays, latitude, longitude
         } = req.body;
 
+        if (allowedDays) allowedDays = sortDaysChronologically(allowedDays);
+
         // 1. STRICT INPUT VALIDATIONS
         if (!schoolName || !schoolAddress || !category || !startDate || !startTime || !endTime) {
             return res.status(400).json({ success: false, message: "School Name, Location, Category, Start Date, Start Time, and End Time are required." });
@@ -357,6 +365,11 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             schoolName, schoolAddress, category, startDate, endDate,
             startTime, endTime, allowedDays, latitude, longitude
         } = req.body;
+
+        if (allowedDays) {
+            allowedDays = sortDaysChronologically(allowedDays);
+            req.body.allowedDays = allowedDays; // Update req.body too since your update loop uses it
+        }
 
         // 1. INPUT VALIDATION
         if (!startDate || !startTime || !endTime) {
@@ -720,6 +733,8 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             startDate, endDate, startTime, endTime
         } = req.body;
 
+        if (daysAllotted) daysAllotted = sortDaysChronologically(daysAllotted);
+
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
@@ -834,6 +849,11 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             schoolName, schoolAddress, latitude, longitude,
             taskDescription, category, startDate, endDate, startTime, endTime, daysAllotted, status
         } = req.body;
+
+        if (daysAllotted) {
+            daysAllotted = sortDaysChronologically(daysAllotted);
+            req.body.daysAllotted = daysAllotted;
+        }
 
         const task = await Task.findById(taskId).populate('school').populate('teacher');
         if (!task) return res.status(404).json({ success: false, message: "Task not found." });
