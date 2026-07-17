@@ -1942,9 +1942,35 @@ adminRouter.get('/employees/:id/media-filters', userAuth, adminAuth, async (req,
         const historicalFilters = await MediaLog.aggregate([
             { $match: { teacher: employeeId } },
             {
+                $addFields: {
+                    pendingInLog: {
+                        $size: {
+                            $filter: {
+                                input: { $ifNull: ["$files", []] },
+                                as: "file",
+                                cond: { $eq: ["$$file.marks", null] }
+                            }
+                        }
+                    }
+                }
+            },
+            {
                 $group: {
-                    _id: "$school",
-                    bands: { $addToSet: "$band" }
+                    _id: { school: "$school", band: "$band" },
+                    pendingCount: { $sum: "$pendingInLog" }
+                }
+            },
+            {
+                $group: {
+                    _id: "$_id.school",
+                    bands: { $addToSet: "$_id.band" },
+                    bandsDetails: {
+                        $push: {
+                            band: "$_id.band",
+                            pendingCount: "$pendingCount"
+                        }
+                    },
+                    totalPendingCount: { $sum: "$pendingCount" }
                 }
             },
             {
@@ -1961,7 +1987,9 @@ adminRouter.get('/employees/:id/media-filters', userAuth, adminAuth, async (req,
                     _id: 1,
                     schoolName: "$schoolDetails.schoolName",
                     address: "$schoolDetails.address",
-                    bands: 1
+                    bands: 1,
+                    bandsDetails: 1,
+                    totalPendingCount: 1
                 }
             },
             { $sort: { schoolName: 1 } }
