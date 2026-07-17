@@ -5,7 +5,7 @@ const bcrypt = require('bcrypt');
 const userAuth = require('../middleware/userAuth');
 const { generateAccessToken, generateRefreshToken } = require('../config/token');
 const validator = require('validator');
-const jwt = require('jsonwebtoken')
+const jwt = require('jsonwebtoken');
 
 // User / Admin Login
 authRouter.post('/login', async (req, res) => {
@@ -77,7 +77,6 @@ authRouter.post('/login', async (req, res) => {
             .json({
                 message: "Login successful",
                 access_token: accessToken,
-                refresh_token: refreshToken,
                 isFirstLogin: false,
                 role: user.role,
                 user: {
@@ -155,10 +154,11 @@ authRouter.post('/reset-initial-password', userAuth, async (req, res) => {
     }
 });
 
-authRouter.post('/refresh-token', async (req, res) => {
+// Reverted back to a GET route using cookie parsing
+authRouter.get('/refresh-token', async (req, res) => {
     try {
-        // CHANGE 2: Read from req.body, NOT req.cookies
-        const { refreshToken: incomingRefreshToken } = req.body;
+        // 1. Extract the refresh token from the secure cookie
+        const incomingRefreshToken = req.cookies?.refreshToken;
 
         if (!incomingRefreshToken) {
             return res.status(401).json({
@@ -167,6 +167,7 @@ authRouter.post('/refresh-token', async (req, res) => {
             });
         }
 
+        // 2. Verify the refresh token using the REFRESH secret
         jwt.verify(
             incomingRefreshToken,
             process.env.REFRESH_TOKEN_SECRET,
@@ -178,6 +179,7 @@ authRouter.post('/refresh-token', async (req, res) => {
                     });
                 }
 
+                // 3. Ensure the user still exists in the database
                 const user = await User.findById(decodedToken.id);
                 if (!user) {
                     return res.status(401).json({
@@ -186,15 +188,14 @@ authRouter.post('/refresh-token', async (req, res) => {
                     });
                 }
 
+                // 4. Generate a fresh Access Token
                 const newAccessToken = generateAccessToken(user._id, user.role);
-                // CHANGE 3: You must actually generate the new refresh token before sending it!
-                const newRefreshToken = generateRefreshToken(user._id, user.role);
 
+                // 5. Send it back to the client
                 return res.status(200).json({
                     success: true,
                     message: "Access token refreshed successfully",
-                    access_token: newAccessToken,
-                    refresh_token: newRefreshToken // Now this won't cause a crash
+                    access_token: newAccessToken
                 });
             }
         );
@@ -250,5 +251,4 @@ authRouter.post('/update-fcm-token', async (req, res) => {
     }
 });
 
-
-module.exports = authRouter
+module.exports = authRouter;
