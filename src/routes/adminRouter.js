@@ -2973,4 +2973,13 @@ adminRouter.put('/events/:schoolName/mark-read', userAuth, adminAuth, async (req
     }
 });
 
+adminRouter.put('/daily-reports/report/:reportId/mark-read', userAuth, adminAuth, async (req, res) => {
+    try {
+        await DailyReports.findByIdAndUpdate(req.params.reportId, { $set: { isReadByAdmin: true } });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
 module.exports = adminRouter;
