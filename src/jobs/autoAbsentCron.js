@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
 const LeaveRequest = require('../models/LeaveRequest');
+const SchoolHoliday = require('../models/SchoolHoliday');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const {
     sendEmployeeAutoAbsentWarning,
@@ -42,9 +43,7 @@ const startAutoAbsentCron = (io) => {
             const warningContext = getTimeAndDateContext(105);
             const absentContext = getTimeAndDateContext(120);
 
-            console.log(`[Cron tick] Checking auto-absent...`);
-
-            // --- SYNCED LEAVE CHECKER ---
+            // --- SYNCED LEAVE & HOLIDAY CHECKER ---
             const currentISTDate = getTimeAndDateContext(0).dateString;
             const todayStart = new Date(`${currentISTDate}T00:00:00.000+05:30`);
             const todayEnd = new Date(`${currentISTDate}T23:59:59.999+05:30`);
@@ -55,6 +54,25 @@ const startAutoAbsentCron = (io) => {
                 toDate: { $gte: todayStart }
             });
             const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
+
+            // --- 2. FETCH ACTIVE HOLIDAYS FOR TODAY ---
+            const activeHolidays = await SchoolHoliday.find({
+                startDate: { $lte: todayEnd },
+                endDate: { $gte: todayStart }
+            });
+
+            // Helper to check if a shift is a holiday
+            const isShiftHoliday = (assignment) => {
+                return activeHolidays.some(h => {
+                    const isSchoolMatch = h.affectedSchools.some(id => id.toString() === assignment.school._id.toString());
+                    const hCat = (h.category || "").trim().toLowerCase();
+                    const aCat = (assignment.category || "").trim().toLowerCase();
+                    const isCategoryMatch = hCat === aCat || hCat === "all" || hCat === "";
+                    const isExcluded = h.excludedAssignments?.some(exId => exId.toString() === assignment._id.toString());
+
+                    return isSchoolMatch && isCategoryMatch && !isExcluded;
+                });
+            };
 
             // ==========================================
             // PHASE 1: 15-MINUTE WARNING
@@ -80,6 +98,9 @@ const startAutoAbsentCron = (io) => {
                         const assignEndStr = getISTDateString(new Date(a.endDate));
                         isBeforeEndDate = currentISTDate <= assignEndStr;
                     }
+
+                    // --- 3. EXCLUDE IF THIS SHIFT IS ON HOLIDAY ---
+                    if (isShiftHoliday(a)) return false;
 
                     return isAfterStartDate && isBeforeEndDate;
                 });
@@ -118,7 +139,6 @@ const startAutoAbsentCron = (io) => {
                     const missedAssignments = employee.assignments.filter(a => {
                         if (!a.allowedDays.includes(absentContext.currentDayName) || a.startTime !== absentContext.targetTimeStr) return false;
 
-                        // --- 🚨 FIXED: STRICT STRING MATH INSTEAD OF setHours(0) ---
                         const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
                         const assignStartStr = getISTDateString(assignmentStartDate);
 
@@ -128,6 +148,9 @@ const startAutoAbsentCron = (io) => {
                             const assignEndStr = getISTDateString(new Date(a.endDate));
                             isBeforeEndDate = currentISTDate <= assignEndStr;
                         }
+
+                        // --- 4. EXCLUDE IF THIS SHIFT IS ON HOLIDAY ---
+                        if (isShiftHoliday(a)) return false;
 
                         return isAfterStartDate && isBeforeEndDate;
                     });

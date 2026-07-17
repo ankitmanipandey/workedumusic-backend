@@ -4,24 +4,21 @@ const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
 const LeaveRequest = require('../models/LeaveRequest');
+const SchoolHoliday = require('../models/SchoolHoliday'); // <-- 1. ADD IMPORT
 const { sendPreShiftWarningEmail } = require('../utils/emailService');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
-const { getISTDateString } = require('../utils/timeHelper'); // <-- IMPORTED TIME HELPER
+const { getISTDateString } = require('../utils/timeHelper');
 
-// Helper to reliably get local time formatted as "08:00 AM" and "YYYY-MM-DD"
 const getTimeAndDateContext = (minutesToAdd = 0) => {
     const d = new Date();
     d.setMinutes(d.getMinutes() + minutesToAdd);
 
-    // Get Date: YYYY-MM-DD 
     const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
     const dateString = dateFormatter.format(d);
 
-    // Get Day Name: "Mon", "Tue"
     const dayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
     const currentDayName = dayFormatter.format(d);
 
-    // Get Time: "HH:MM" in 24-hour format
     const timeFormatter = new Intl.DateTimeFormat('en-GB', {
         timeZone: 'Asia/Kolkata',
         hour: '2-digit',
@@ -30,17 +27,14 @@ const getTimeAndDateContext = (minutesToAdd = 0) => {
     });
     const targetTimeStr = timeFormatter.format(d);
 
-    return { dateString, currentDayName, targetTimeStr }; // targetDateObj removed as it's no longer safely needed
+    return { dateString, currentDayName, targetTimeStr };
 };
 
 const startShiftWarningCron = (io) => {
-    // Runs at minute 0 past every hour, and every minute thereafter (* * * * *)
     cron.schedule('* * * * *', async () => {
         try {
-            // 1. Look exactly 15 minutes into the future
             const { dateString, currentDayName, targetTimeStr } = getTimeAndDateContext(15);
 
-            // --- SYNCED LEAVE CHECKER (IST Boundaries) ---
             const todayStart = new Date(`${dateString}T00:00:00.000+05:30`);
             const todayEnd = new Date(`${dateString}T23:59:59.999+05:30`);
 
@@ -50,9 +44,13 @@ const startShiftWarningCron = (io) => {
                 toDate: { $gte: todayStart }
             });
             const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
-            // ----------------------------
 
-            // 2. High-Performance Query: Find ONLY users who have a shift starting at exactly this time today
+            // --- 2. FETCH ACTIVE HOLIDAYS FOR TODAY ---
+            const activeHolidays = await SchoolHoliday.find({
+                startDate: { $lte: todayEnd },
+                endDate: { $gte: todayStart }
+            });
+
             const employeesStartingSoon = await User.find({
                 role: 'Employee',
                 isActive: true,
@@ -64,25 +62,17 @@ const startShiftWarningCron = (io) => {
                 }
             }).populate('assignments.school');
 
-            if (employeesStartingSoon.length === 0) return; // No shifts starting in 15 mins
+            if (employeesStartingSoon.length === 0) return;
 
-            // 3. Check each matching employee
             for (const employee of employeesStartingSoon) {
-
-                // --- EXCLUDE IF ON LEAVE ---
                 if (usersOnLeaveSet.has(employee._id.toString())) continue;
 
-                // Filter down to just the specific assignments starting at targetTimeStr
-                // AND ensure the Start/End dates are valid
                 const upcomingAssignments = employee.assignments.filter(a => {
-                    // Check Time and Day first (Fastest checks)
                     if (!a.allowedDays.includes(currentDayName) || a.startTime !== targetTimeStr) return false;
 
-                    // --- SYNCED DATE ISOLATION LOGIC (Timezone Safe String Math) ---
                     const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
                     const assignStartStr = getISTDateString(assignmentStartDate);
 
-                    // YYYY-MM-DD string comparison perfectly sidesteps all UTC math!
                     const isAfterStartDate = dateString >= assignStartStr;
 
                     let isBeforeEndDate = true;
@@ -91,7 +81,20 @@ const startShiftWarningCron = (io) => {
                         isBeforeEndDate = dateString <= assignEndStr;
                     }
 
-                    // Only keep this assignment if it hasn't expired and isn't in the future
+                    // --- 3. EXCLUDE IF THIS SHIFT IS ON HOLIDAY ---
+                    const isHoliday = activeHolidays.some(h => {
+                        const isSchoolMatch = h.affectedSchools.some(id => id.toString() === a.school._id.toString());
+                        const hCat = (h.category || "").trim().toLowerCase();
+                        const aCat = (a.category || "").trim().toLowerCase();
+                        const isCategoryMatch = hCat === aCat || hCat === "all" || hCat === "";
+                        const isExcluded = h.excludedAssignments?.some(exId => exId.toString() === a._id.toString());
+
+                        return isSchoolMatch && isCategoryMatch && !isExcluded;
+                    });
+
+                    // Return false if it's a holiday so we don't warn them
+                    if (isHoliday) return false;
+
                     return isAfterStartDate && isBeforeEndDate;
                 });
 
@@ -99,20 +102,17 @@ const startShiftWarningCron = (io) => {
                     const schoolId = assignment.school._id.toString();
                     const category = assignment.category;
 
-                    // 4. Check if they have already recorded attendance for this specific shift today
                     const hasCheckedIn = await Attendance.findOne({
                         teacher: employee._id,
                         school: schoolId,
                         band: category,
-                        date: dateString // e.g., "2026-03-22"
+                        date: dateString
                     });
 
-                    // 5. Trigger Warnings if NO check-in exists
                     if (!hasCheckedIn) {
                         const schoolName = assignment.school.schoolName;
                         const msg = `Reminder: Your ${category} shift at ${schoolName} starts in 15 minutes (${targetTimeStr}). Please check in soon.`;
 
-                        // A. Save In-App Notification
                         const notif = await Notification.create({
                             recipient: employee._id,
                             title: "Upcoming Shift Reminder",
@@ -120,26 +120,14 @@ const startShiftWarningCron = (io) => {
                             type: "Warning"
                         });
 
-                        // B. Emit Real-time Socket Alert
                         if (io) {
                             io.to(employee._id.toString()).emit('new_notification', {
-                                _id: notif._id,
-                                title: notif.title,
-                                message: notif.message,
-                                type: notif.type,
-                                timestamp: new Date()
+                                _id: notif._id, title: notif.title, message: notif.message, type: notif.type, timestamp: new Date()
                             });
                         }
 
-                        // C. Send Email (Now using your synced Global/User preferences helper!)
                         if (await canSendEmailToUser(employee)) {
-                            await sendPreShiftWarningEmail(
-                                employee.email,
-                                employee.name,
-                                schoolName,
-                                category,
-                                targetTimeStr
-                            );
+                            await sendPreShiftWarningEmail(employee.email, employee.name, schoolName, category, targetTimeStr);
                         }
                     }
                 }

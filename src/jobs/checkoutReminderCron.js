@@ -1,9 +1,11 @@
+// services/checkoutReminderCron.js
 const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
-const LeaveRequest = require('../models/LeaveRequest'); // <-- ADDED IMPORT
-const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- ADDED HELPER
+const LeaveRequest = require('../models/LeaveRequest');
+const SchoolHoliday = require('../models/SchoolHoliday');
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const {
     sendEmployeeCheckoutReminder,
     sendAdminCheckoutAlert
@@ -23,7 +25,6 @@ const getTimeAndDateContext = (minutesToSubtract = 0) => {
     const timeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
     const targetTimeStr = timeFormatter.format(d);
 
-    // Return the Date object too for start/end date logic
     return { dateString, currentDayName, targetTimeStr, targetDateObj: d };
 };
 
@@ -43,10 +44,9 @@ const startCheckoutReminderCron = (io) => {
             const context = getTimeAndDateContext(10);
             console.log(`[Cron tick] Checking overdues... -> Searching for EndTime: Day: ${context.currentDayName}, Time: ${context.targetTimeStr}`);
 
-            // --- SYNCED LEAVE CHECKER ---
+            // --- SYNCED LEAVE & HOLIDAY CHECKER ---
             const currentISTDate = context.dateString;
 
-            // Force strict IST boundaries for the database query by appending the offset
             const todayStart = new Date(`${currentISTDate}T00:00:00.000+05:30`);
             const todayEnd = new Date(`${currentISTDate}T23:59:59.999+05:30`);
 
@@ -56,9 +56,14 @@ const startCheckoutReminderCron = (io) => {
                 toDate: { $gte: todayStart }
             });
             const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
-            // ----------------------------
 
-            // 2. Find employees who have a shift ending at this exact time today
+            // --- 2. FETCH ACTIVE HOLIDAYS FOR TODAY ---
+            const activeHolidays = await SchoolHoliday.find({
+                startDate: { $lte: todayEnd },
+                endDate: { $gte: todayStart }
+            });
+
+            // 3. Find employees who have a shift ending at this exact time today
             const overdueEmployees = await User.find({
                 role: 'Employee',
                 isActive: true,
@@ -67,7 +72,6 @@ const startCheckoutReminderCron = (io) => {
 
             if (overdueEmployees.length === 0) return;
 
-            // Fetch admins once if we have people to notify
             const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
             for (const employee of overdueEmployees) {
@@ -81,11 +85,9 @@ const startCheckoutReminderCron = (io) => {
                 const endedAssignments = employee.assignments.filter(a => {
                     if (!a.allowedDays.includes(context.currentDayName) || a.endTime !== context.targetTimeStr) return false;
 
-                    // --- DATE ISOLATION LOGIC ---
                     const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
                     const assignStartStr = getISTDateString(assignmentStartDate);
 
-                    // YYYY-MM-DD string comparison perfectly sidesteps all UTC math!
                     const isAfterStartDate = currentISTDate >= assignStartStr;
 
                     let isBeforeEndDate = true;
@@ -94,11 +96,24 @@ const startCheckoutReminderCron = (io) => {
                         isBeforeEndDate = currentISTDate <= assignEndStr;
                     }
 
+                    // --- 4. EXCLUDE IF THIS SHIFT IS ON HOLIDAY ---
+                    const isHoliday = activeHolidays.some(h => {
+                        const isSchoolMatch = h.affectedSchools.some(id => id.toString() === a.school._id.toString());
+                        const hCat = (h.category || "").trim().toLowerCase();
+                        const aCat = (a.category || "").trim().toLowerCase();
+                        const isCategoryMatch = hCat === aCat || hCat === "all" || hCat === "";
+                        const isExcluded = h.excludedAssignments?.some(exId => exId.toString() === a._id.toString());
+
+                        return isSchoolMatch && isCategoryMatch && !isExcluded;
+                    });
+
+                    // Return false if it's a holiday to avoid querying the Attendance collection
+                    if (isHoliday) return false;
+
                     return isAfterStartDate && isBeforeEndDate;
                 });
 
                 for (const assignment of endedAssignments) {
-                    // Check Attendance: Did they check in today, and is checkOutTime still null?
                     const attendanceRecord = await Attendance.findOne({
                         teacher: employee._id,
                         school: assignment.school._id,
@@ -110,7 +125,7 @@ const startCheckoutReminderCron = (io) => {
                     if (attendanceRecord && !attendanceRecord.checkOutTime && ['Present', 'Late'].includes(attendanceRecord.status)) {
                         console.log(` -> Sending checkout reminder to ${employee.name}`);
 
-                        // 1. Notify Employee (In-App & Email)
+                        // 1. Notify Employee
                         const empMsg = `Reminder: Your shift at ${assignment.school.schoolName} ended 10 mins ago. Please check out if you are finished.`;
                         await sendInAppNotification(io, employee._id, "Check-Out Reminder", empMsg, "Warning");
 
@@ -118,7 +133,7 @@ const startCheckoutReminderCron = (io) => {
                             await sendEmployeeCheckoutReminder(employee.email, employee.name, assignment.school.schoolName, assignment.category, context.targetTimeStr);
                         }
 
-                        // 2. Notify Admins (In-App & Email)
+                        // 2. Notify Admins
                         const adminMsg = `${employee.name} hasn't checked out of ${assignment.school.schoolName} (Shift ended 10 mins ago).`;
                         for (const admin of admins) {
                             await sendInAppNotification(io, admin._id, "Overdue Check-Out", adminMsg, "System");
