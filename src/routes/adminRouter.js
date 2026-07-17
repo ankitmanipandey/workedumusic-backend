@@ -455,19 +455,25 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
         };
 
         Object.keys(fieldLabels).forEach(key => {
-            if (Array.isArray(oldVal)) {
-                // FIX: Create temporary copies before sorting so we don't scramble the DB data
-                const oldSorted = [...oldVal].sort().join(',');
-                const newSorted = [...newVal].sort().join(',');
+            if (req.body[key] !== undefined) {
+                // Ensure these are scoped correctly to the loop
+                const oldVal = assignment[key];
+                const newVal = req.body[key];
 
-                if (oldSorted !== newSorted) {
-                    changes.push({ field: fieldLabels[key], oldValue: oldVal.join(', '), newValue: newVal.join(', ') });
+                if (Array.isArray(oldVal) && Array.isArray(newVal)) {
+                    // Sort both before comparing to see if they actually changed
+                    const oldSorted = [...oldVal].sort().join(',');
+                    const newSorted = [...newVal].sort().join(',');
+
+                    if (oldSorted !== newSorted) {
+                        changes.push({ field: fieldLabels[key], oldValue: oldVal.join(', '), newValue: newVal.join(', ') });
+                    }
+                    assignment[key] = newVal;
+                } else if (oldVal !== newVal) {
+                    changes.push({ field: fieldLabels[key], oldValue: oldVal, newValue: newVal });
+                    assignment[key] = newVal;
                 }
-            } else if (oldVal !== newVal) {
-                changes.push({ field: fieldLabels[key], oldValue: oldVal, newValue: newVal });
             }
-            // Now when this saves below, it will save in the correct chronological order!
-            assignment[key] = newVal;
         });
 
         assignment.startDate = istStartDate;
