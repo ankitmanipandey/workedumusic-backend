@@ -761,10 +761,10 @@ employeeRouter.post('/media', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.get('/tasks', userAuth, async (req, res) => {
     try {
-        // --- THE FIX: Filter out tasks that the employee has hidden ---
+        // Filter out tasks that the employee has hidden
         const tasks = await Task.find({
             teacher: req.user._id,
-            isHiddenFromEmployee: { $ne: true } // Excludes tasks where this is true
+            isHiddenFromEmployee: { $ne: true }
         })
             .populate('school', 'schoolName address location')
             .sort({ createdAt: -1 }); // Newest first
@@ -775,11 +775,20 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
             schoolName: task.school ? task.school.schoolName : "Unknown School",
             location: task.school ? task.school.address : "Unknown Location",
             daysAllotted: task.daysAllotted,
-            duration: task.duration,
-            timing: task.startTime && task.endTime ? `${task.startTime} - ${task.endTime}` : "", category: task.category,
             taskDescription: task.taskDescription,
+            category: task.category,
             status: task.status.toLowerCase(), // Ensure 'pending', 'accepted', 'rejected'
-            rejectReason: task.rejectReason
+            rejectReason: task.rejectReason,
+
+            // --- THE FIX: THESE 4 LINES WERE MISSING IN YOUR CODE ---
+            startDate: task.startDate || null,
+            endDate: task.endDate || null,
+            startTime: task.startTime || "",
+            endTime: task.endTime || "",
+
+            // Fallbacks for older legacy tasks
+            duration: task.duration || "",
+            timing: task.timing || (task.startTime && task.endTime ? `${task.startTime} - ${task.endTime}` : "")
         }));
 
         res.status(200).json({ success: true, data: formattedTasks });
