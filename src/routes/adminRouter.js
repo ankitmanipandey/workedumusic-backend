@@ -1928,7 +1928,7 @@ adminRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
         res.status(200).json({ success: true, data: formattedEmployees });
     } catch (error) {
         console.error("Fetch Employees Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching employees." });
+        res.status(500).json({ success: false, message: "Server error fetching employees." }); 
     }
 });
 
