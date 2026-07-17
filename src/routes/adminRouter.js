@@ -1693,8 +1693,18 @@ adminRouter.put('/leave-requests/:id/status', userAuth, adminAuth, async (req, r
             if (await canSendEmailToUser(leaveRequest.employee)) {
 
                 // Format dates nicely for the email template
-                const fromStr = new Date(leaveRequest.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-                const toStr = new Date(leaveRequest.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+                const fromStr = new Date(leaveRequest.fromDate).toLocaleDateString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric'
+                });
+                const toStr = new Date(leaveRequest.toDate).toLocaleDateString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric'
+                });
 
                 if (status === 'approved') {
                     await sendLeaveApprovedEmailToEmployee(
@@ -2597,8 +2607,18 @@ adminRouter.post('/school-holidays', userAuth, adminAuth, async (req, res) => {
         });
 
         // --- NOTIFICATIONS & EMAILS LOGIC ---
-        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
+        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
 
         let schoolNamesStr = "All Schools";
         if (affectedSchools && affectedSchools.length > 0) {
@@ -2686,8 +2706,18 @@ adminRouter.put('/school-holidays/:id', userAuth, adminAuth, async (req, res) =>
 
         // --- NOTIFICATIONS & EMAILS LOGIC ---
         // It is now 100% safe to read updated.startDate
-        const fromStr = new Date(updated.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-        const toStr = new Date(updated.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        const fromStr = new Date(updated.startDate).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
+        const toStr = new Date(updated.endDate).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
 
         let schoolNamesStr = "All Schools";
         if (updated.affectedSchools && updated.affectedSchools.length > 0) {
@@ -2745,8 +2775,18 @@ adminRouter.delete('/school-holidays/:id', userAuth, adminAuth, async (req, res)
         await SchoolHoliday.findByIdAndDelete(req.params.id);
 
         // --- NOTIFICATIONS & EMAILS LOGIC ---
-        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        const fromStr = new Date(holiday.startDate).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
+        const toStr = new Date(holiday.endDate).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
 
         let schoolNamesStr = "All Schools";
         if (holiday.affectedSchools && holiday.affectedSchools.length > 0) {
